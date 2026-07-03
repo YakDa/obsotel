@@ -13,7 +13,7 @@
 //
 // Services import only this package:
 //
-//	import "github.com/mingdos/obsotel"
+//	import "github.com/YakDa/obsotel"
 //
 // Fail-open principle: if the OTel collector is down, sampling is off,
 // or the SDK is uninitialized, observability calls do not impact business
@@ -24,7 +24,7 @@ import (
 	"context"
 	"log/slog"
 
-	obs "github.com/mingdos/obsotel/internal/obsbase"
+	obs "github.com/YakDa/obsotel/internal/obsbase"
 )
 
 // ----------------------------------------------------------------------------

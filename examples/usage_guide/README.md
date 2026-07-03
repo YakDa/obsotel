@@ -1,7 +1,7 @@
 # `usage_guide` — Coding guide for obsotel
 
 A runnable tour of every exported function, type, and method in the
-`github.com/mingdos/obsotel` package.
+`github.com/YakDa/obsotel` package.
 
 ## Run it
 

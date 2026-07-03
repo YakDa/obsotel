@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	obs "github.com/mingdos/obsotel/internal/obsbase"
+	obs "github.com/YakDa/obsotel/internal/obsbase"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 

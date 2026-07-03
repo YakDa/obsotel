@@ -1,4 +1,4 @@
-module github.com/mingdos/obsotel
+module github.com/YakDa/obsotel
 
 go 1.22
 

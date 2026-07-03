@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	obs "github.com/mingdos/obsotel/internal/obsbase"
+	obs "github.com/YakDa/obsotel/internal/obsbase"
 	"go.opentelemetry.io/otel/trace"
 )
 

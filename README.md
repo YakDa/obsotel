@@ -21,7 +21,7 @@ import (
     "net/http"
     "os"
 
-    "github.com/mingdos/obsotel"
+    "github.com/YakDa/obsotel"
 )
 
 func main() {
@@ -137,7 +137,7 @@ func doStuff(ctx context.Context) error {
 
 ## Design principles
 
-1. **One import path.** Every service imports `github.com/mingdos/obsotel`. No `log`, no `fmt.Println`, no other logging libraries. Enforce via lint (see `lint.md`).
+1. **One import path.** Every service imports `github.com/YakDa/obsotel`. No `log`, no `fmt.Println`, no other logging libraries. Enforce via lint (see `lint.md`).
 2. **Context is the spine.** Every operation takes `ctx context.Context` as the first arg. Request ID, user ID, trace ID, logger — all flow through context. Never pass them as separate args.
 3. **Errors wrap with `%w`.** Only `%w` preserves the unwrap chain. `obsotel.Wrap` and `obsotel.WrapWith` always use it.
 4. **Errors log with `LogErr`.** Single helper. Logs at ERROR with `err` (string), `error_chain` (structured array), and any caller attrs. Use it everywhere an error is logged.

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mingdos/obsotel"
+	"github.com/YakDa/obsotel"
 
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"

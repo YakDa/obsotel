@@ -24,23 +24,23 @@ linters-settings:
     # If you see one of these, use slog or obs.LogErr instead.
     forbid:
       - pattern: "fmt\\.Println"
-        msg: "use slog.Info instead — see github.com/mingdos/obsotel"
+        msg: "use slog.Info instead — see github.com/YakDa/obsotel"
       - pattern: "fmt\\.Print\\b"
-        msg: "use slog.Info instead — see github.com/mingdos/obsotel"
+        msg: "use slog.Info instead — see github.com/YakDa/obsotel"
       - pattern: "fmt\\.Printf"
-        msg: "use slog.Info with structured fields instead — see github.com/mingdos/obsotel"
+        msg: "use slog.Info with structured fields instead — see github.com/YakDa/obsotel"
       - pattern: "log\\.Println"
-        msg: "use slog.Info instead — see github.com/mingdos/obsotel"
+        msg: "use slog.Info instead — see github.com/YakDa/obsotel"
       - pattern: "log\\.Print\\b"
-        msg: "use slog.Info instead — see github.com/mingdos/obsotel"
+        msg: "use slog.Info instead — see github.com/YakDa/obsotel"
       - pattern: "log\\.Printf"
-        msg: "use slog.Info with structured fields instead — see github.com/mingdos/obsotel"
+        msg: "use slog.Info with structured fields instead — see github.com/YakDa/obsotel"
       - pattern: "log\\.Fatal\\b"
-        msg: "use slog.Error + os.Exit instead — see github.com/mingdos/obsotel"
+        msg: "use slog.Error + os.Exit instead — see github.com/YakDa/obsotel"
       - pattern: "log\\.Fatalf"
-        msg: "use slog.Error with structured fields + os.Exit instead — see github.com/mingdos/obsotel"
+        msg: "use slog.Error with structured fields + os.Exit instead — see github.com/YakDa/obsotel"
       - pattern: "log\\.Fatalln"
-        msg: "use slog.Error + os.Exit instead — see github.com/mingdos/obsotel"
+        msg: "use slog.Error + os.Exit instead — see github.com/YakDa/obsotel"
       - pattern: "log\\.Panic\\b"
         msg: "use slog.Error instead — log.Panic prints and panics, neither is what you want"
       - pattern: "log\\.Panicf"
@@ -49,14 +49,14 @@ linters-settings:
       # AppError Meta fields, and per-service shape lock.
       # Always use obsotel.LogErr(ctx, ...) for errors.
       - pattern: "slog\\.Error\\([^,]+,\\s*\"err\"\\s*,"
-        msg: "use obsotel.LogErr instead — see github.com/mingdos/obsotel (preserves error_chain + Meta + shape)"
+        msg: "use obsotel.LogErr instead — see github.com/YakDa/obsotel (preserves error_chain + Meta + shape)"
       - pattern: "slog\\.ErrorContext\\([^,]+,[^,]+,\\s*\"err\"\\s*,"
-        msg: "use obsotel.LogErr instead — see github.com/mingdos/obsotel (preserves error_chain + Meta + shape)"
+        msg: "use obsotel.LogErr instead — see github.com/YakDa/obsotel (preserves error_chain + Meta + shape)"
       # slog.SetDefault replaces the process-wide default logger. It must
       # only run in main() after the obsotel logger is constructed.
       # Mid-process replacement is spooky action at a distance.
       - pattern: "slog\\.SetDefault\\("
-        msg: "slog.SetDefault belongs in main() only — see github.com/mingdos/obsotel"
+        msg: "slog.SetDefault belongs in main() only — see github.com/YakDa/obsotel"
 ```
 
 ## What each rule blocks

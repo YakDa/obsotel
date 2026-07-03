@@ -1,4 +1,4 @@
-// Package main is a usage guide for the github.com/mingdos/obsotel package.
+// Package main is a usage guide for the github.com/YakDa/obsotel package.
 //
 // It exercises every exported function, type, and method so you can see how
 // each one is meant to be called and what it produces. Run with:
@@ -24,7 +24,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 
-	"github.com/mingdos/obsotel"
+	"github.com/YakDa/obsotel"
 )
 
 // --------------------------------------------------------------------

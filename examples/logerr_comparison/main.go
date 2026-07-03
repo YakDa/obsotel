@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/mingdos/obsotel"
+	"github.com/YakDa/obsotel"
 )
 
 func banner(s string) {
