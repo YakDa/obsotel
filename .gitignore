@@ -1,0 +1,24 @@
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+
+# Output of "go build" / "go vet"
+*.out
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local logs from examples (usage_guide writes err.log via 2>)
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
