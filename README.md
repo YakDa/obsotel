@@ -38,7 +38,12 @@ func main() {
     log := obsotel.NewLogger(os.Getenv("ENV"))
     slog.SetDefault(log)
 
-    // 3. Wire up HTTP. Handler() wraps mux with otelhttp server span + obsbase logging.
+    // 3. Wire up HTTP. Handler() wraps mux with otelhttp server span + obsbase
+    // logging. The obsotel.Handler internally calls obsotel.WithLogger on
+    // each request's context, so handlers downstream get request_id and
+    // trace_id injection for free. (slog.SetDefault is still useful as a
+    // fallback for goroutines that don't carry the request context — L(ctx)
+    // returns slog.Default() when no logger is bound.)
     mux := http.NewServeMux()
     mux.HandleFunc("/foo", fooHandler)
     http.ListenAndServe(":8080", obsotel.Handler(log, mux, "user-service"))
@@ -83,8 +88,9 @@ func doStuff(ctx context.Context) error {
 ┌──────────────────────────────────────────────────────────┐
 │  obsotel          (public — what services import)         │
 │  - api.go           re-exports the obsbase API            │
-│  - logger.go        slog + traceHandler (auto-inject      │
-│                     trace_id/span_id when span is active) │
+│  - logger.go        slog + traceHandler + NewLoggerToWriter│
+│                     (obsotel-only; composes obsbase log   │
+│                      with the trace/requestID handler chain)│
 │  - middleware.go    Handler() = otelhttp + obsbase log    │
 │  - client.go        NewClient(), DoRequest, retry         │
 │  - tracer.go        InitTracer, Tracer, options           │
@@ -94,17 +100,16 @@ func doStuff(ctx context.Context) error {
                           │ composes
                           ▼
 ┌──────────────────────────────────────────────────────────┐
-│  internal/obsotel/internal/obsbase   (hidden — internal/) │
+│  internal/obsbase              (hidden — internal/)       │
 │  - logger.go, context.go, request_id.go                  │
 │  - middleware.go    LoggingMiddleware + statusRecorder   │
 │  - outbound.go      DoRequest, DoRequestWithRetry        │
 │  - errors.go        AppError, ChainOf, Wrap, LogErr      │
-│  - sampling.go      NewSampler, NewRandomSampler         │
 │  - obs_test.go                                             │
 └──────────────────────────────────────────────────────────┘
 ```
 
-`obsotel` is the only import path services should know. The inner `internal/obsotel/internal/obsbase/` is hidden by Go's `internal/` rule — services cannot import it directly.
+`obsotel` is the only import path services should know. The inner `internal/obsbase/` is hidden by Go's `internal/` rule — services cannot import it directly.
 
 ---
 
@@ -117,7 +122,7 @@ func doStuff(ctx context.Context) error {
 | `api.go` | Re-exports of the pure-`slog` core + key constants | `L`, `With`, `WithLogger`, `WithRequestID`, `RequestIDFromContext`, `LogErr`, `Wrap`, `WrapWith`, `New`, `ChainOf`, `AppError`, `ErrorChain`, `RequestIDKey`, `UserIDKey`, `TraceIDKey`, `SpanIDKey` |
 | `logger.go` | slog setup + trace + request_id injection | `NewLogger(env)`, `NewLoggerWithLevel(env, level)`, `NewLoggerToWriter(env, level, w)`, `LevelFromString(s)` |
 | `middleware.go` | HTTP handler wiring | `Handler(log, next, serviceName)`, `HandlerWithFilter(log, next, serviceName, shouldTrace)` |
-| `client.go` | HTTP client + outbound logging + retry | `NewClient()`, `DoRequest(ctx, req)`, `DoRequestWithClient(...)`, `DoRequestWithRetry(...)`, `DoRequestWithRetryAndClient(...)`, `HTTPError` |
+| `client.go` | HTTP client + outbound logging + retry | `NewClient()`, `DoRequest(ctx, req)` *(simplified: takes ctx + req, uses internal default client; for custom transport use `DoRequestWithClient`)*, `DoRequestWithClient(...)`, `DoRequestWithRetry(...)`, `DoRequestWithRetryAndClient(...)`, `HTTPError` |
 | `tracer.go` | TracerProvider + propagator + span helper | `InitTracer(ctx, name, opts...)`, `Tracer(name)`, `StartSpan(ctx, name)`, `WithSamplingRatio(ratio)`, `WithExporter(exp)` |
 | `metrics.go` | OTel counter/histogram helpers + MeterProvider | `NewCounter(name, desc)`, `MustNewCounter`, `NewHistogram(name, desc, unit)`, `MustNewHistogram`, `HTTPRequestDuration`, `HTTPRequestsTotal`, `InitMeter(ctx, name, opts...)`, `WithMeterExporter(exp)` |
 
@@ -129,9 +134,10 @@ func doStuff(ctx context.Context) error {
 | `context.go` | Context-bound logger + request ID | `WithLogger(ctx, l)`, `L(ctx)`, `With(ctx, attrs...)`, `WithRequestID(ctx, id)`, `RequestIDFromContext(ctx)` |
 | `request_id.go` | 16-byte hex ID generator | `NewRequestID()` |
 | `middleware.go` | HTTP logging middleware + `statusRecorder` | `LoggingMiddleware(base *slog.Logger)` |
-| `outbound.go` | HTTP client wrapper + retry | `DoRequest(ctx, client, req)`, `DoRequestWithRetry(ctx, client, req, maxAttempts, backoff)`, `HTTPError` |
+| `outbound.go` | HTTP client wrapper + retry | `DoRequest(ctx, client, req)`, `DoRequestWithRetry(ctx, client, req, maxAttempts, backoff)`, `HTTPError` *(the public `obsotel.DoRequest(ctx, req)` is a 2-arg wrapper around these that uses obsotel's default client)* |
 | `errors.go` | Error chain + structured error type | `ErrorChain`, `ChainOf(err)`, `AppError` (`New`, `WithMeta`), `Wrap(ctx, err, op)`, `WrapWith(ctx, err, op, kv...)`, `LogErr(ctx, msg, err, attrs...)` |
-| `sampling.go` | Samplers for hot paths | `NewSampler(rate uint64)` (deterministic), `NewRandomSampler(rate uint64)` (probabilistic); rates in parts-per-million |
+
+The hidden package also contains `sampling.go` (deterministic + random log-sampling helpers for hot paths). These are not re-exported to the public API today — they're internal scaffolding kept around for the day a second service needs log-rate sampling. Promote them when that need materializes; until then, importing them would require reaching into `internal/` directly, which the Go toolchain forbids for outside services.
 
 ---
 
@@ -178,7 +184,7 @@ Cross-signal correlation works because `trace_id` is a JSON field on every log l
 
 ## Tracer configuration
 
-`InitTracer` defaults to a stdout exporter (spans printed to stderr) and 100% sampling. Override for production:
+`InitTracer` defaults to **silent span output** (spans flow through the SDK but are discarded, so slog has the stderr to itself) and **100% sampling**. Override for production:
 
 ```go
 import (
@@ -198,6 +204,20 @@ defer shutdown(ctx)
 ```
 
 If `InitTracer` returns an error, call `defer shutdown(ctx)` anyway — the returned `shutdown` is a no-op in that case.
+
+### Dev-only span dump (no collector required)
+
+Set the `OBSOTEL_DUMP_SPANS` env var to peek at span output during local development without standing up a collector:
+
+| Value | Behavior |
+|---|---|
+| *(unset / empty)* | **Silent default.** Spans still flow through the SDK; just not dumped anywhere. Keeps stderr clean for slog. |
+| `stdout` | Multi-line pretty JSON on stderr (legacy format, easy to skim). |
+| `compact` | Single-line JSON on stderr (one span per line). |
+| `file:/path` | JSONL appended to `/path` (open-file failure falls back to silent). |
+| anything else | Silent (treated like unset). |
+
+Production callers should always use `WithExporter(otlpExporter)` — these modes are local-debugging tools.
 
 ---
 
@@ -236,7 +256,7 @@ if err != nil { slog.Warn("otel_meter_init_failed", "err", err) }
 defer shutdown(ctx)
 ```
 
-Without options, `InitMeter` defaults to a stdoutmetric exporter for dev visibility — symmetric with `InitTracer` defaulting to stdouttrace.
+Without options, `InitMeter` defaults to a stdoutmetric exporter for dev visibility. See [Tracer configuration](#tracer-configuration) for the corresponding default-behavior details on `InitTracer` (silent span dump; use `OBSOTEL_DUMP_SPANS` for local debugging).
 
 ## Custom spans
 
