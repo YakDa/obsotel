@@ -34,7 +34,7 @@ func main() {
 	// Build the SAME error chain for every demo.
 	root := errors.New("connection refused")
 	mid := fmt.Errorf("db query: %w", root)
-	top := obsotel.New("load_user", "infra_error", mid).WithMeta(
+	top := obsotel.NewErr("load_user", "infra_error", mid).WithMeta(
 		"user_id", "u42",
 		"tenant", "t1",
 	)

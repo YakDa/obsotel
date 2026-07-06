@@ -120,7 +120,7 @@ func doStuff(ctx context.Context) error {
 
 | File | Purpose | Key APIs |
 |---|---|---|
-| `api.go` | Re-exports of the pure-`slog` core + key constants | `L`, `With`, `WithLogger`, `WithRequestID`, `RequestIDFromContext`, `LogErr`, `Wrap`, `WrapWith`, `New`, `ChainOf`, `AppError`, `ErrorChain`, `RequestIDKey`, `UserIDKey`, `TraceIDKey`, `SpanIDKey` |
+| `api.go` | Re-exports of the pure-`slog` core + key constants | `L`, `With`, `WithLogger`, `WithRequestID`, `RequestIDFromContext`, `LogErr`, `Wrap`, `WrapWith`, `NewErr`, `ChainOf`, `AppError`, `ErrorChain`, `RequestIDKey`, `UserIDKey`, `TraceIDKey`, `SpanIDKey` |
 | `logger.go` | slog setup + trace + request_id injection | `NewLogger(env)`, `NewLoggerWithLevel(env, level)`, `NewLoggerToWriter(env, level, w)`, `LevelFromString(s)` |
 | `middleware.go` | HTTP handler wiring | `Handler(log, next, serviceName)`, `HandlerWithFilter(log, next, serviceName, shouldTrace)` |
 | `client.go` | HTTP client + outbound logging + retry | `NewClient()`, `DoRequest(ctx, req)` *(simplified: takes ctx + req, uses internal default client; for custom transport use `DoRequestWithClient`)*, `DoRequestWithClient(...)`, `DoRequestWithRetry(...)`, `DoRequestWithRetryAndClient(...)`, `HTTPError` |
@@ -136,7 +136,7 @@ func doStuff(ctx context.Context) error {
 | `request_id.go` | 16-byte hex ID generator | `NewRequestID()` |
 | `middleware.go` | HTTP logging middleware + `statusRecorder` | `LoggingMiddleware(base *slog.Logger)` |
 | `outbound.go` | HTTP client wrapper + retry | `DoRequest(ctx, client, req)`, `DoRequestWithRetry(ctx, client, req, maxAttempts, backoff)`, `HTTPError` *(the public `obsotel.DoRequest(ctx, req)` is a 2-arg wrapper around these that uses obsotel's default client)* |
-| `errors.go` | Error chain + structured error type | `ErrorChain`, `ChainOf(err)`, `AppError` (`New`, `WithMeta`), `Wrap(ctx, err, op)`, `WrapWith(ctx, err, op, kv...)`, `LogErr(ctx, msg, err, attrs...)` |
+| `errors.go` | Error chain + structured error type | `ErrorChain`, `ChainOf(err)`, `AppError` (`NewErr`, `WithMeta`), `Wrap(ctx, err, op)`, `WrapWith(ctx, err, op, kv...)`, `LogErr(ctx, msg, err, attrs...)` |
 
 The hidden package also contains `sampling.go` (deterministic + random log-sampling helpers for hot paths). These are not re-exported to the public API today — they're internal scaffolding kept around for the day a second service needs log-rate sampling. Promote them when that need materializes; until then, importing them would require reaching into `internal/` directly, which the Go toolchain forbids for outside services.
 
@@ -335,7 +335,7 @@ slog.Info("service_starting", "port", port)
 return fmt.Errorf("user %s not found", id)
 
 // After — classifiable, queryable, chain-preserving
-return obsotel.New("load_user", "not_found", sql.ErrNoRows).WithMeta("user_id", id)
+return obsotel.NewErr("load_user", "not_found", sql.ErrNoRows).WithMeta("user_id", id)
 ```
 
 ### HTTP middleware → wrap mux with OTel + logging

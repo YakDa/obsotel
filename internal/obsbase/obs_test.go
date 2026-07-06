@@ -219,7 +219,7 @@ func (c *cycleErr) Unwrap() error { return c.next }
 // ----------------------------------------------------------------------------
 
 func TestAppError_Formats(t *testing.T) {
-	e := New("load_user", "not_found", errors.New("sql: no rows"))
+	e := NewErr("load_user", "not_found", errors.New("sql: no rows"))
 	got := e.Error()
 	if !strings.Contains(got, "load_user") || !strings.Contains(got, "not_found") || !strings.Contains(got, "sql: no rows") {
 		t.Fatalf("error string missing parts: %q", got)
@@ -228,14 +228,14 @@ func TestAppError_Formats(t *testing.T) {
 
 func TestAppError_UnwrapPropagates(t *testing.T) {
 	sentinel := errors.New("sentinel")
-	e := New("op", "kind", sentinel)
+	e := NewErr("op", "kind", sentinel)
 	if !errors.Is(e, sentinel) {
 		t.Fatal("errors.Is should find sentinel via Unwrap")
 	}
 }
 
 func TestAppError_WithMetaCopies(t *testing.T) {
-	e := New("op", "kind", nil).WithMeta("user_id", "u1")
+	e := NewErr("op", "kind", nil).WithMeta("user_id", "u1")
 	cp := e.WithMeta("tenant", "t1")
 	if e.Meta["tenant"] != nil {
 		t.Fatal("WithMeta should copy, not mutate original")
@@ -361,7 +361,7 @@ func TestLogErr_AppError_SurfacesOpKindAtTopLevel(t *testing.T) {
 	ctx := WithLogger(context.Background(), l)
 	root := errors.New("connection refused")
 	mid := fmt.Errorf("db query: %w", root)
-	appErr := New("load_user", "infra_error", mid).WithMeta("user_id", "u42")
+	appErr := NewErr("load_user", "infra_error", mid).WithMeta("user_id", "u42")
 
 	LogErr(ctx, "load_failed", appErr)
 
@@ -688,8 +688,8 @@ func TestConcurrent_WrapAndLogErr(t *testing.T) {
 // and MarshalText (for text handler) so both formats render correctly.
 func TestErrorChain_LogValue_Structured(t *testing.T) {
 	root := errors.New("dial tcp: connection refused")
-	mid := New("mid_op", "infra_error", root)
-	top := New("top_op", "not_found", mid).WithMeta("user_id", "u42")
+	mid := NewErr("mid_op", "infra_error", root)
+	top := NewErr("top_op", "not_found", mid).WithMeta("user_id", "u42")
 
 	chain := ChainOf(top)
 	if len(chain) != 3 {
@@ -839,8 +839,8 @@ func TestErrorChain_TextHandler_RendersReadable(t *testing.T) {
 	ctx := WithLogger(context.Background(), l)
 
 	root := errors.New("dial tcp: nope")
-	mid := New("mid_op", "infra_error", root)
-	top := New("top_op", "not_found", mid).WithMeta("user_id", "u42")
+	mid := NewErr("mid_op", "infra_error", root)
+	top := NewErr("top_op", "not_found", mid).WithMeta("user_id", "u42")
 
 	LogErr(ctx, "msg", top)
 

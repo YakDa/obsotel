@@ -91,8 +91,8 @@ func WrapWith(ctx context.Context, err error, op string, kv ...any) error {
 }
 
 // New constructs an AppError.
-func New(op, kind string, err error) *obs.AppError {
-	return obs.New(op, kind, err)
+func NewErr(op, kind string, err error) *obs.AppError {
+	return obs.NewErr(op, kind, err)
 }
 
 // ChainOf walks the wrapped-error chain.

@@ -149,7 +149,7 @@ func ChainOf(err error) ErrorChain {
 // ----------------------------------------------------------------------------
 
 // AppError carries operation, classification, cause, and arbitrary metadata.
-// Use New() or Wrap() to construct; use WithMeta() to enrich.
+// Use NewErr() or Wrap() to construct; use WithMeta() to enrich.
 //
 // AppError implements error, slog.LogValuer, and Unwrap, so it composes
 // cleanly with errors.Is/As and structured logging.
@@ -186,8 +186,8 @@ func (e *AppError) LogValue() slog.Value {
 	return slog.GroupValue(attrs...)
 }
 
-// New constructs an AppError. If err is non-nil it is wrapped (via Unwrap).
-func New(op, kind string, err error) *AppError {
+// NewErr constructs an AppError. If err is non-nil it is wrapped (via Unwrap).
+func NewErr(op, kind string, err error) *AppError {
 	return &AppError{Op: op, Kind: kind, Err: err, Meta: map[string]any{}}
 }
 
@@ -232,7 +232,7 @@ func Wrap(ctx context.Context, err error, op string) error {
 	if err == nil {
 		return nil
 	}
-	ae := New(op, "internal", err)
+	ae := NewErr(op, "internal", err)
 	if reqID := RequestIDFromContext(ctx); reqID != "" {
 		ae = ae.WithMeta(RequestIDKey, reqID)
 	}

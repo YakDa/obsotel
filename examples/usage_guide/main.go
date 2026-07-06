@@ -153,7 +153,7 @@ func sectionErrorConstruction() {
 	// top level.
 	root := errors.New("connection refused")
 	dbWrap := fmt.Errorf("db query: %w", root)
-	appErr := obsotel.New("load_user", "infra_error", dbWrap).
+	appErr := obsotel.NewErr("load_user", "infra_error", dbWrap).
 		WithMeta(obsotel.UserIDKey, "u42").
 		WithMeta("tenant", "acme")
 
@@ -196,7 +196,7 @@ func sectionLogErr() {
 	// Build a multi-layer chain like real code does.
 	root := errors.New("connection refused")
 	dbWrap := fmt.Errorf("db query: %w", root)
-	appErr := obsotel.New("load_user", "infra_error", dbWrap).
+	appErr := obsotel.NewErr("load_user", "infra_error", dbWrap).
 		WithMeta(obsotel.UserIDKey, "u42").
 		WithMeta("tenant", "acme")
 
