@@ -13,16 +13,12 @@ import (
 // initial duplicate-fix missed: Wrap() puts request_id into AppError.Meta,
 // and LogErr iterates Meta and emits it as a top-level attr. Combined with
 // requestIDHandler injecting from ctx, the JSON line ends up with
-// `request_id` twice. As with the LoggingMiddleware test, this scans the
-// raw JSON for `"request_id"` because json.Unmarshal last-wins and would
-// silently hide the duplicate.
+// `request_id` twice.
 //
-// After the structured-chain fix, error_chain[0] also legitimately contains
-// request_id (from AppError.Meta surfaced via LogValue). That's correct — the
-// structured chain is *supposed* to carry the field inside its group. So
-// "exactly 1" is too strict. The right invariant is: exactly 1 top-level
-// request_id. The chain entry is fine because it's correctly namespaced
-// inside the structured group.
+// The right invariant is: exactly 1 top-level request_id. request_id should
+// NOT also appear inside the chain entry (after the chain-simplification
+// fix, error_chain carries only `cause` / `error`, not the full AppError
+// surface). So the chain is now strictly redundant-data-free.
 func TestLogErr_NoDuplicateRequestID(t *testing.T) {
 	buf := &bytes.Buffer{}
 	base := slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo})
@@ -45,8 +41,9 @@ func TestLogErr_NoDuplicateRequestID(t *testing.T) {
 	if out["request_id"] != "rid-test-001" {
 		t.Fatalf("expected top-level request_id=rid-test-001, got %v", out["request_id"])
 	}
-	// The chain entry may also carry request_id inside its group — that's
-	// legitimate structured data, not a duplicate. Verify it's namespaced.
+	// request_id must NOT appear inside the chain entry. The chain carries
+	// only `cause` now; meta fields (request_id included) live at the top
+	// level only.
 	chain, ok := out["error_chain"].([]any)
 	if !ok || len(chain) == 0 {
 		t.Fatalf("expected error_chain array, got: %#v", out["error_chain"])
@@ -55,9 +52,8 @@ func TestLogErr_NoDuplicateRequestID(t *testing.T) {
 	if !ok {
 		t.Fatalf("chain[0] should be a map, got %T", chain[0])
 	}
-	if first["request_id"] != "rid-test-001" {
-		t.Fatalf("chain[0].request_id should be rid-test-001 (carried via Meta), got %v",
-			first["request_id"])
+	if _, present := first["request_id"]; present {
+		t.Fatalf("chain[0] should not carry request_id; got entry: %#v", first)
 	}
 	// Sanity: no raw duplicate "request_id" at the top level (would indicate
 	// the original bug returned). Count top-level occurrences only by parsing.

@@ -25,23 +25,32 @@ type ErrorChain []error
 // LogValue implements slog.LogValuer. Renders each chain entry as a
 // structured map[string]any, not a colon-jammed string.
 //
+// Each entry carries ONLY a `cause` (for *AppError) or `error` (for plain
+// errors) field. Notably absent: `op`, `kind`, and Meta. Those already
+// appear at the TOP LEVEL of the log line (via LogErr's surface pass),
+// so duplicating them in every chain entry would just bloat every line
+// for queries that almost always want the outermost op/kind anyway.
+//
 // Dispatch:
-//   - If the entry implements slog.LogValuer (e.g. *AppError) and its
-//     LogValue() returns a KindGroup, peel the group's attrs into a
-//     map[string]any. This is the structured path that Loki/ELK can
-//     index field-by-field (e.g. `error_chain[0].op="do_stuff"`).
-//   - Otherwise, wrap the entry's Error() in a single-key map
-//     `{"error": "..."}` so stdlib errors (*url.Error, *net.OpError,
-//     *net.DNSError, etc.) still arrive as structured values, not
-//     opaque strings.
+//   - If the entry is an *AppError, emit `{"cause": err.Error()}`. The
+//     rendered Error() already includes op + kind + cause (AppError.Error
+//     formats as "op: kind: cause"), so the chronology of ops is still
+//     readable in the chain even without separate op/kind fields.
+//   - Otherwise, wrap the entry's Error() in `{"error": "..."}` so stdlib
+//     errors (*url.Error, *net.OpError, *net.DNSError, etc.) still arrive
+//     as structured values, not opaque strings.
+//
+// If you need per-layer op/kind disambiguation (rare; mostly when you
+// nest Wrap() calls and want to know which inner op failed), read the
+// Go-level chain via obsotel.ChainOf(err) and inspect each *AppError
+// directly. The log line is not the right place for that.
 //
 // Implementation note: the resulting []map[string]any is wrapped in a
 // chainList (which implements both json.Marshaler and TextMarshaler).
 // slog's JSONHandler calls MarshalJSON → real JSON array of objects.
 // slog's TextHandler calls MarshalText → readable bracketed list. Without
 // these Marshalers, slog.TextHandler falls back to fmt.Sprintf("%+v", ...)
-// which dumps the Go default `map[k:v]` syntax — unreadable. See commit
-// message for the bug report.
+// which dumps the Go default `map[k:v]` syntax — unreadable.
 //
 // Why a uniform shape: mixing strings and groups in the same array would
 // force every consumer to know which index is which type. Every entry is
@@ -49,26 +58,13 @@ type ErrorChain []error
 func (c ErrorChain) LogValue() slog.Value {
 	parts := make([]map[string]any, len(c))
 	for i, e := range c {
-		if lv, ok := e.(slog.LogValuer); ok {
-			if v := lv.LogValue(); v.Kind() == slog.KindGroup {
-				parts[i] = attrMap(v.Group())
-				continue
-			}
+		if ae, ok := e.(*AppError); ok {
+			parts[i] = map[string]any{"cause": ae.Error()}
+		} else {
+			parts[i] = map[string]any{"error": e.Error()}
 		}
-		parts[i] = map[string]any{"error": e.Error()}
 	}
 	return slog.AnyValue(chainList(parts))
-}
-
-// attrMap peels a []slog.Attr into a map[string]any. Used by ErrorChain
-// to convert AppError.LogValue() output into something slog's JSONHandler
-// can encode as a JSON object (KindGroup attrs have no MarshalJSON; maps do).
-func attrMap(attrs []slog.Attr) map[string]any {
-	m := make(map[string]any, len(attrs))
-	for _, a := range attrs {
-		m[a.Key] = a.Value.Any()
-	}
-	return m
 }
 
 // chainList wraps a []map[string]any and implements both json.Marshaler
