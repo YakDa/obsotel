@@ -135,6 +135,34 @@ func doStuff(ctx context.Context) error {
 
 ---
 
+## Data flow
+
+At runtime, three signals (logs, metrics, traces) leave your service through two distinct pipelines. The choice of pipeline for each signal is dictated by the data shape, not by accident:
+
+- **Logs** are point-in-time events — a single line of JSON suffices; aggregation happens downstream in the log backend.
+- **Metrics** and **traces** are aggregated numerical series — they need an in-memory aggregator and a wire format, which is what the OTel SDK provides.
+
+```mermaid
+flowchart LR
+    subgraph Service["Your Go service"]
+        SLOG["slog.Logger (stdlib, JSON output)"]
+        OM["OTel Metrics: Counter / Histogram / Gauge"]
+        OT["OTel Tracer (spans)"]
+    end
+
+    SLOG -- "JSON line"             --> STDOUT["stdout / file"]
+    OM   -- in-memory aggregation   --> OTLP1["OTLP exporter"]
+    OT   -- spans                   --> OTLP2["OTLP exporter"]
+
+    STDOUT -- "Promtail /<br>Filebeat / Fluentd" --> LOKI["Loki / ELK / Splunk<br>(log backend)"]
+    OTLP1  -- OTLP                                  --> PROM["Prometheus /<br>Grafana Mimir"]
+    OTLP2  -- OTLP                                  --> TEMPO["Tempo / Jaeger /<br>Honeycomb (traces)"]
+```
+
+Notice the asymmetry: **logs go through zero OTel SDK code in the app** — one handler reads `trace_id` from `ctx` if available, that's it. Metrics and traces go through the OTel SDK because their data shape demands aggregation that slog can't provide.
+
+Cross-signal correlation works because `trace_id` is a JSON field on every log line, and the OTel SDK writes the same `trace_id` onto every span it exports. Both backends index the field; Grafana (or any joined UI) stitches them by the shared value.
+
 ## Design principles
 
 1. **One import path.** Every service imports `github.com/YakDa/obsotel`. No `log`, no `fmt.Println`, no other logging libraries. Enforce via lint (see `lint.md`).
