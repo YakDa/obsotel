@@ -2,10 +2,17 @@ package obs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
 )
+
+// jsonMarshal is the package-level json marshaler used by chainList.MarshalJSON.
+// Lives as a var so tests can intercept if needed.
+var jsonMarshal = json.Marshal
 
 // ----------------------------------------------------------------------------
 // ErrorChain — walk the wrapped-error chain and log it as a structured array.
@@ -28,20 +35,19 @@ type ErrorChain []error
 //     *net.DNSError, etc.) still arrive as structured values, not
 //     opaque strings.
 //
-// Implementation note: why map[string]any and not slog.Value/slog.Attr?
-// slog.AnyValue wraps the whole slice in KindAny, which JSONHandler then
-// json.Marshal's — and slog.Value has no MarshalJSON, so values would
-// render as `{}`. Maps marshal cleanly. Each entry is therefore built as
-// a plain Go map; the outer slog.AnyValue preserves the slice shape so
-// the result is a JSON array of objects.
+// Implementation note: the resulting []map[string]any is wrapped in a
+// chainList (which implements both json.Marshaler and TextMarshaler).
+// slog's JSONHandler calls MarshalJSON → real JSON array of objects.
+// slog's TextHandler calls MarshalText → readable bracketed list. Without
+// these Marshalers, slog.TextHandler falls back to fmt.Sprintf("%+v", ...)
+// which dumps the Go default `map[k:v]` syntax — unreadable. See commit
+// message for the bug report.
 //
-// Why not just emit `slog.String("error", e.Error())` at the top level
-// of each entry? Because mixing shapes inside a slog.AnyValue array
-// (some strings, some groups) makes the resulting JSON inconsistent —
-// every consumer has to know which index is which type. Keeping every
-// entry as a map gives a uniform shape: `[{...}, {...}, {...}]`.
+// Why a uniform shape: mixing strings and groups in the same array would
+// force every consumer to know which index is which type. Every entry is
+// a map; index 0 is always an object.
 func (c ErrorChain) LogValue() slog.Value {
-	parts := make([]any, len(c))
+	parts := make([]map[string]any, len(c))
 	for i, e := range c {
 		if lv, ok := e.(slog.LogValuer); ok {
 			if v := lv.LogValue(); v.Kind() == slog.KindGroup {
@@ -51,7 +57,7 @@ func (c ErrorChain) LogValue() slog.Value {
 		}
 		parts[i] = map[string]any{"error": e.Error()}
 	}
-	return slog.AnyValue(parts)
+	return slog.AnyValue(chainList(parts))
 }
 
 // attrMap peels a []slog.Attr into a map[string]any. Used by ErrorChain
@@ -63,6 +69,59 @@ func attrMap(attrs []slog.Attr) map[string]any {
 		m[a.Key] = a.Value.Any()
 	}
 	return m
+}
+
+// chainList wraps a []map[string]any and implements both json.Marshaler
+// (for slog.JSONHandler) and encoding.TextMarshaler (for slog.TextHandler).
+//
+// slog.JSONHandler (KindAny branch) checks json.Marshaler first and calls
+// MarshalJSON. We delegate to encoding/json which produces a real JSON
+// array of objects.
+//
+// slog.TextHandler (KindAny branch) checks encoding.TextMarshaler first
+// and calls MarshalText. Without it, slog falls back to fmt.Sprintf("%+v", ...)
+// which dumps the Go default `map[k:v]` syntax for each entry — unreadable
+// in dev logs. MarshalText produces a bracketed list:
+//
+//	error_chain="[0] op=do_stuff kind=internal | [1] error=boom"
+//
+// Key order is sorted for diff-friendly output (production order in a Go
+// map is randomized; sorting makes the log line stable across runs).
+type chainList []map[string]any
+
+// MarshalJSON returns a JSON array of objects. slog.JSONHandler routes
+// KindAny through json.Marshaler if present; this gives identical output
+// to []map[string]any marshaled directly, but lets us own the format.
+//
+// IMPORTANT: we cast to []map[string]any (not chainList) before calling
+// json.Marshal, otherwise json.Marshal would call this MarshalJSON again
+// and recurse forever.
+func (c chainList) MarshalJSON() ([]byte, error) {
+	return jsonMarshal([]map[string]any(c))
+}
+
+// MarshalText returns a human-readable rendering for slog.TextHandler.
+// Format: `[i] k=v k=v | [j] k=v` — one bracketed entry per layer, pipe
+// separated. Quoting via slog.TextHandler itself (it wraps the value in
+// quotes when it contains spaces).
+func (c chainList) MarshalText() ([]byte, error) {
+	if len(c) == 0 {
+		return []byte("[]"), nil
+	}
+	parts := make([]string, len(c))
+	for i, m := range c {
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		kvs := make([]string, len(keys))
+		for j, k := range keys {
+			kvs[j] = k + "=" + fmt.Sprintf("%v", m[k])
+		}
+		parts[i] = fmt.Sprintf("[%d] %s", i, strings.Join(kvs, " "))
+	}
+	return []byte(strings.Join(parts, " | ")), nil
 }
 
 // ChainOf walks err via errors.Unwrap and returns the chain.

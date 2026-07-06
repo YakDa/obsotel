@@ -680,8 +680,9 @@ func TestConcurrent_WrapAndLogErr(t *testing.T) {
 // Why maps and not slog.Value groups: slog.AnyValue wraps the whole slice
 // in KindAny, which JSONHandler then json.Marshal's. slog.Value has no
 // MarshalJSON, so values would render as `{}`. Maps marshal cleanly. Each
-// entry is therefore built as a plain Go map; the outer slog.AnyValue
-// preserves the slice shape so the result is a JSON array of objects.
+// entry is therefore built as a plain Go map; the outer chainList wrapper
+// provides explicit MarshalJSON (for JSON handler) and MarshalText (for
+// text handler) so both formats render correctly.
 //
 // Without this fix, both would land as opaque strings, making per-layer
 // queries like `error_chain[1].op="load_user"` impossible.
@@ -700,20 +701,25 @@ func TestErrorChain_LogValue_Structured(t *testing.T) {
 		t.Fatalf("expected KindAny, got %v", v.Kind())
 	}
 
+	// v.Any() returns the underlying chainList ([]map[string]any wrapper).
+	// Indexable as []map[string]any.
 	partsAny := v.Any()
-	parts, ok := partsAny.([]any)
+	parts, ok := partsAny.([]map[string]any)
 	if !ok {
-		t.Fatalf("expected KindAny to wrap a []any, got %T: %#v", partsAny, partsAny)
+		// Some slog paths may also accept chainList directly; check that too.
+		if cl, ok2 := partsAny.(chainList); ok2 {
+			parts = []map[string]any(cl)
+			ok = true
+		} else {
+			t.Fatalf("expected KindAny to wrap a []map[string]any, got %T: %#v", partsAny, partsAny)
+		}
 	}
 	if len(parts) != 3 {
 		t.Fatalf("expected 3 parts, got %d", len(parts))
 	}
 
 	// Entry 0 (top): *AppError — map with op/kind/user_id/cause
-	entry0, ok := parts[0].(map[string]any)
-	if !ok {
-		t.Fatalf("entry 0 should be a map[string]any, got %T: %#v", parts[0], parts[0])
-	}
+	entry0 := parts[0]
 	if entry0["op"] != "top_op" {
 		t.Fatalf("entry 0.op = %v, want top_op", entry0["op"])
 	}
@@ -730,19 +736,13 @@ func TestErrorChain_LogValue_Structured(t *testing.T) {
 	}
 
 	// Entry 1 (mid): *AppError — map with op/kind/cause (no user_id)
-	entry1, ok := parts[1].(map[string]any)
-	if !ok {
-		t.Fatalf("entry 1 should be a map[string]any, got %T: %#v", parts[1], parts[1])
-	}
+	entry1 := parts[1]
 	if entry1["op"] != "mid_op" {
 		t.Fatalf("entry 1.op = %v, want mid_op", entry1["op"])
 	}
 
 	// Entry 2 (root): plain error — single-key map {"error": "..."}
-	entry2, ok := parts[2].(map[string]any)
-	if !ok {
-		t.Fatalf("entry 2 should be a map[string]any, got %T: %#v", parts[2], parts[2])
-	}
+	entry2 := parts[2]
 	if entry2["error"] != "dial tcp: connection refused" {
 		t.Fatalf("entry 2.error = %v, want dial tcp: ...", entry2["error"])
 	}
@@ -831,3 +831,37 @@ func TestLogErr_StructuredChain_NotColonJammed(t *testing.T) {
 
 // attrMap lives in errors.go now (used by ErrorChain.LogValue). Kept
 // here as a comment so the test intent is visible from the test file too.
+
+// TestErrorChain_TextHandler_RendersReadable guards against the text-handler
+// fallback that previously produced "[map[k:v] map[k:v]]" garbage. The fix
+// is chainList.MarshalText, which slog.TextHandler routes through when
+// KindAny hits its TextMarshaler check.
+//
+// Before fix (env != "prod" / dev):
+//   error_chain="[map[op:do_stuff kind:internal] map[error:boom]]"
+//
+// After fix:
+//   error_chain="[0] op=do_stuff kind=internal | [1] error=boom"
+func TestErrorChain_TextHandler_RendersReadable(t *testing.T) {
+	var buf bytes.Buffer
+	l := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	ctx := WithLogger(context.Background(), l)
+
+	root := errors.New("dial tcp: nope")
+	mid := New("mid_op", "infra_error", root)
+	top := New("top_op", "not_found", mid).WithMeta("user_id", "u42")
+
+	LogErr(ctx, "msg", top)
+
+	got := buf.String()
+	// The Go default "[map[...]]" format must NOT appear.
+	if strings.Contains(got, "[map[") {
+		t.Fatalf("text handler fell back to Go map format: %s", got)
+	}
+	// Each layer must be bracketed and readable.
+	for _, want := range []string{"[0]", "[1]", "[2]", "op=top_op", "op=mid_op", "error=dial tcp: nope"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in text output: %s", want, got)
+		}
+	}
+}
