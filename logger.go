@@ -88,10 +88,15 @@ func (h *traceHandler) WithGroup(name string) slog.Handler {
 // (when set via WithRequestID) to every log record. Symmetric to
 // traceHandler for trace_id/span_id.
 //
-// Fail-open: if no request_id is in ctx, the record passes through
-// unchanged. slog dedupes AddAttrs by key, so a With-bound request_id
-// is preserved if present (last-write-wins on collision; identical
-// values yield identical output).
+// Fail-open: if no request_id is in ctx, the record passes through unchanged.
+//
+// Single-writer contract: this handler is the ONLY place that should add
+// request_id to a log record. slog.Record.AddAttrs is a plain append — it
+// does NOT dedupe by key, so a second AddAttrs (e.g. via Logger.With, via
+// literal slog.String("request_id", ...), or via AppError.Meta surfaced
+// in LogErr) emits a duplicate JSON key on the same line. If you find
+// request_id appearing twice in your output, another writer slipped in:
+// remove it there, not here.
 type requestIDHandler struct {
 	base slog.Handler
 }
