@@ -25,7 +25,7 @@ import (
 
 func TestLogErr_ProducesStructuredOutput(t *testing.T) {
 	var buf bytes.Buffer
-	l := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	l := obsotel.NewLoggerToWriter("prod", slog.LevelInfo, &buf)
 	ctx := obsotel.WithLogger(obsotel.WithRequestID(context.Background(), "req-xyz"), l)
 
 	root := errors.New("root cause")

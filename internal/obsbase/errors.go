@@ -205,6 +205,13 @@ func LogErr(ctx context.Context, msg string, err error, attrs ...any) {
 			slog.String("kind", ae.Kind),
 		)
 		for k, v := range ae.Meta {
+			// requestIDHandler / traceHandler already inject these from
+			// ctx. Skip them here so the JSON line has each key exactly
+			// once. (Meta still carries them for non-log consumers —
+			// errors.As(err, &ae).Meta is fine to read.)
+			if k == RequestIDKey || k == TraceIDKey || k == SpanIDKey {
+				continue
+			}
 			args = append(args, k, v)
 		}
 	}
