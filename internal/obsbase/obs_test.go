@@ -338,8 +338,16 @@ func TestLogErr_LogsErrorWithChain(t *testing.T) {
 	if !ok || len(chain) < 2 {
 		t.Fatalf("expected error_chain array, got: %#v", got["error_chain"])
 	}
-	if !strings.Contains(chain[len(chain)-1].(string), "root cause") {
-		t.Fatalf("expected chain root to mention 'root cause', got: %#v", chain)
+	// After the structured-groups fix, each chain entry is a JSON object,
+	// not a colon-jammed string. The root entry is a plain error, so it
+	// lands as {"error": "root cause"}.
+	rootObj, ok := chain[len(chain)-1].(map[string]any)
+	if !ok {
+		t.Fatalf("chain root should be a structured object, got %T: %#v",
+			chain[len(chain)-1], chain[len(chain)-1])
+	}
+	if rootObj["error"] != "root cause" {
+		t.Fatalf("chain root.error = %v, want 'root cause'", rootObj["error"])
 	}
 }
 
@@ -658,3 +666,168 @@ func TestConcurrent_WrapAndLogErr(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestErrorChain_LogValue_Structured verifies that ErrorChain.LogValue()
+// emits each entry as a structured map[string]any, not a colon-jammed
+// string.
+//
+// Two paths to verify:
+//   1. *AppError entries land as maps containing op/kind/meta/cause fields
+//      (dispatched via slog.LogValuer, attrs peeled into a map).
+//   2. Plain error entries land as single-key maps `{"error": "..."}`
+//      (the stdlib fallback).
+//
+// Why maps and not slog.Value groups: slog.AnyValue wraps the whole slice
+// in KindAny, which JSONHandler then json.Marshal's. slog.Value has no
+// MarshalJSON, so values would render as `{}`. Maps marshal cleanly. Each
+// entry is therefore built as a plain Go map; the outer slog.AnyValue
+// preserves the slice shape so the result is a JSON array of objects.
+//
+// Without this fix, both would land as opaque strings, making per-layer
+// queries like `error_chain[1].op="load_user"` impossible.
+func TestErrorChain_LogValue_Structured(t *testing.T) {
+	root := errors.New("dial tcp: connection refused")
+	mid := New("mid_op", "infra_error", root)
+	top := New("top_op", "not_found", mid).WithMeta("user_id", "u42")
+
+	chain := ChainOf(top)
+	if len(chain) != 3 {
+		t.Fatalf("expected 3 chain entries, got %d", len(chain))
+	}
+
+	v := chain.LogValue()
+	if v.Kind() != slog.KindAny {
+		t.Fatalf("expected KindAny, got %v", v.Kind())
+	}
+
+	partsAny := v.Any()
+	parts, ok := partsAny.([]any)
+	if !ok {
+		t.Fatalf("expected KindAny to wrap a []any, got %T: %#v", partsAny, partsAny)
+	}
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 parts, got %d", len(parts))
+	}
+
+	// Entry 0 (top): *AppError — map with op/kind/user_id/cause
+	entry0, ok := parts[0].(map[string]any)
+	if !ok {
+		t.Fatalf("entry 0 should be a map[string]any, got %T: %#v", parts[0], parts[0])
+	}
+	if entry0["op"] != "top_op" {
+		t.Fatalf("entry 0.op = %v, want top_op", entry0["op"])
+	}
+	if entry0["kind"] != "not_found" {
+		t.Fatalf("entry 0.kind = %v, want not_found", entry0["kind"])
+	}
+	if entry0["user_id"] != "u42" {
+		t.Fatalf("entry 0.user_id = %v, want u42", entry0["user_id"])
+	}
+	// entry 0's cause is the rendered AppError.Error() of mid, since top wraps
+	// mid (whose Error() is "mid_op: infra_error: dial tcp: ...").
+	if entry0["cause"] != "mid_op: infra_error: dial tcp: connection refused" {
+		t.Fatalf("entry 0.cause = %v, want mid_op: ...", entry0["cause"])
+	}
+
+	// Entry 1 (mid): *AppError — map with op/kind/cause (no user_id)
+	entry1, ok := parts[1].(map[string]any)
+	if !ok {
+		t.Fatalf("entry 1 should be a map[string]any, got %T: %#v", parts[1], parts[1])
+	}
+	if entry1["op"] != "mid_op" {
+		t.Fatalf("entry 1.op = %v, want mid_op", entry1["op"])
+	}
+
+	// Entry 2 (root): plain error — single-key map {"error": "..."}
+	entry2, ok := parts[2].(map[string]any)
+	if !ok {
+		t.Fatalf("entry 2 should be a map[string]any, got %T: %#v", parts[2], parts[2])
+	}
+	if entry2["error"] != "dial tcp: connection refused" {
+		t.Fatalf("entry 2.error = %v, want dial tcp: ...", entry2["error"])
+	}
+}
+
+// TestLogErr_StructuredChain_NotColonJammed is the end-to-end check that
+// mirrors the bug from a real production log: `error_chain` must be
+// `[]object` (groups), not `[]string` (colon-jammed blobs). Decoded JSON
+// must yield map entries, not string entries.
+func TestLogErr_StructuredChain_NotColonJammed(t *testing.T) {
+	l, buf := captureLogger(slog.LevelInfo)
+	ctx := WithLogger(context.Background(), l)
+	root := errors.New("dial tcp: lookup www.googddle.com: no such host")
+	mid := fmt.Errorf("mid: %w", root)
+	top := WrapWith(ctx, mid, "do_stuff", "user_id", "u1")
+
+	LogErr(ctx, "do_stuff_failed", top)
+
+	got := decodeJSON(t, buf)
+	chain, ok := got["error_chain"].([]any)
+	if !ok {
+		t.Fatalf("expected error_chain to be an array, got %T: %#v", got["error_chain"], got["error_chain"])
+	}
+	if len(chain) != 3 {
+		t.Fatalf("expected 3 chain entries, got %d: %#v", len(chain), chain)
+	}
+
+	// Every entry must be a JSON object (group), not a string.
+	for i, e := range chain {
+		if _, isMap := e.(map[string]any); !isMap {
+			t.Fatalf("chain[%d] should be a structured object, got %T: %#v", i, e, e)
+		}
+	}
+
+	// Top entry (*AppError) — must contain op=do_stuff
+	top0 := chain[0].(map[string]any)
+	if top0["op"] != "do_stuff" {
+		t.Fatalf("chain[0].op = %v, want do_stuff", top0["op"])
+	}
+
+	// Root entry (plain error) — must contain error=...
+	root2 := chain[2].(map[string]any)
+	if root2["error"] != "dial tcp: lookup www.googddle.com: no such host" {
+		t.Fatalf("chain[2].error = %v, want dial tcp: ...", root2["error"])
+	}
+
+	// Crucial invariant: the FULL chain rendered as a single concatenated
+	// string ("do_stuff: internal: mid: dial tcp: ...") must NOT appear
+	// INSIDE error_chain. The top-level "err" field legitimately contains
+	// it (that's the single rendered summary at the top), but error_chain
+	// must be the structured breakdown.
+	//
+	// Per-layer strings inside error_chain entries are FINE — those are
+	// the legitimate Error() output of each layer (e.g.
+	// fmt.Errorf("mid: %w", root) returns "mid: ...").
+	//
+	// The bug we're guarding against is the OLD behavior where
+	// ErrorChain.LogValue() returned []string of e.Error() values — meaning
+	// the outermost entry's Error() would render the WHOLE chain as one
+	// string INSIDE the error_chain array.
+	//
+	// Slice the raw JSON at the error_chain array boundaries and check that.
+	raw := buf.String()
+	const prefix = `"error_chain":`
+	if i := strings.Index(raw, prefix); i >= 0 {
+		chainJSON := raw[i+len(prefix):]
+		depth, end := 0, 0
+		for j, c := range chainJSON {
+			if c == '[' {
+				depth++
+			}
+			if c == ']' {
+				depth--
+				if depth == 0 {
+					end = j + 1
+					break
+				}
+			}
+		}
+		chainOnly := chainJSON[:end]
+		if strings.Contains(chainOnly, "do_stuff: internal: mid:") {
+			t.Fatalf("full chain rendered as one string inside error_chain: %s", chainOnly)
+		}
+	}
+}
+
+// attrMap lives in errors.go now (used by ErrorChain.LogValue). Kept
+// here as a comment so the test intent is visible from the test file too.

@@ -15,13 +15,54 @@ import (
 // for slog.LogValuer so it serializes as a JSON array in production.
 type ErrorChain []error
 
-// LogValue implements slog.LogValuer. Renders as a JSON array of strings.
+// LogValue implements slog.LogValuer. Renders each chain entry as a
+// structured map[string]any, not a colon-jammed string.
+//
+// Dispatch:
+//   - If the entry implements slog.LogValuer (e.g. *AppError) and its
+//     LogValue() returns a KindGroup, peel the group's attrs into a
+//     map[string]any. This is the structured path that Loki/ELK can
+//     index field-by-field (e.g. `error_chain[0].op="do_stuff"`).
+//   - Otherwise, wrap the entry's Error() in a single-key map
+//     `{"error": "..."}` so stdlib errors (*url.Error, *net.OpError,
+//     *net.DNSError, etc.) still arrive as structured values, not
+//     opaque strings.
+//
+// Implementation note: why map[string]any and not slog.Value/slog.Attr?
+// slog.AnyValue wraps the whole slice in KindAny, which JSONHandler then
+// json.Marshal's — and slog.Value has no MarshalJSON, so values would
+// render as `{}`. Maps marshal cleanly. Each entry is therefore built as
+// a plain Go map; the outer slog.AnyValue preserves the slice shape so
+// the result is a JSON array of objects.
+//
+// Why not just emit `slog.String("error", e.Error())` at the top level
+// of each entry? Because mixing shapes inside a slog.AnyValue array
+// (some strings, some groups) makes the resulting JSON inconsistent —
+// every consumer has to know which index is which type. Keeping every
+// entry as a map gives a uniform shape: `[{...}, {...}, {...}]`.
 func (c ErrorChain) LogValue() slog.Value {
 	parts := make([]any, len(c))
 	for i, e := range c {
-		parts[i] = e.Error()
+		if lv, ok := e.(slog.LogValuer); ok {
+			if v := lv.LogValue(); v.Kind() == slog.KindGroup {
+				parts[i] = attrMap(v.Group())
+				continue
+			}
+		}
+		parts[i] = map[string]any{"error": e.Error()}
 	}
 	return slog.AnyValue(parts)
+}
+
+// attrMap peels a []slog.Attr into a map[string]any. Used by ErrorChain
+// to convert AppError.LogValue() output into something slog's JSONHandler
+// can encode as a JSON object (KindGroup attrs have no MarshalJSON; maps do).
+func attrMap(attrs []slog.Attr) map[string]any {
+	m := make(map[string]any, len(attrs))
+	for _, a := range attrs {
+		m[a.Key] = a.Value.Any()
+	}
+	return m
 }
 
 // ChainOf walks err via errors.Unwrap and returns the chain.
