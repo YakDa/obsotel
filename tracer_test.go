@@ -222,3 +222,38 @@ func TestSafeURLString(t *testing.T) {
 		}
 	})
 }
+
+// TestDefaultExporter_FileMode_OpenError_SilentFallback verifies that
+// when the file: path cannot be opened (parent dir missing), the
+// exporter factory returns a silent fallback rather than an error.
+// A startup panic is strictly worse than the silent fallback we want;
+// the fallback path must be safe to call and produce a usable exporter.
+//
+// Note: this test does NOT exercise the (alleged) nil-receiver panic
+// on *os.File.Close. Go's stdlib has guarded that case since 1.0 (it
+// returns ErrInvalid rather than panicking). What we test here is the
+// contract: file-open failure -> silent exporter, no error.
+func TestDefaultExporter_FileMode_OpenError_SilentFallback(t *testing.T) {
+	// t.TempDir() exists; the child dir does not.
+	bad := filepath.Join(t.TempDir(), "nonexistent-subdir", "spans.jsonl")
+	t.Setenv("OBSOTEL_DUMP_SPANS", "file:"+bad)
+
+	// Must not panic.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("defaultExporter panicked on file-open error: %v", r)
+		}
+	}()
+
+	exp, err := defaultExporter(context.Background())
+	if err != nil {
+		t.Fatalf("defaultExporter(file:bad): want silent fallback, got error: %v", err)
+	}
+	if exp == nil {
+		t.Fatal("defaultExporter(file:bad): want silent exporter, got nil")
+	}
+	// Sanity: the silent exporter must be usable (ExportSpans is a no-op).
+	if err := exp.ExportSpans(context.Background(), nil); err != nil {
+		t.Errorf("silent exporter ExportSpans: %v", err)
+	}
+}

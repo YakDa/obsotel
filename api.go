@@ -90,7 +90,7 @@ func WrapWith(ctx context.Context, err error, op string, kv ...any) error {
 	return obs.WrapWith(ctx, err, op, kv...)
 }
 
-// New constructs an AppError.
+// NewErr constructs an AppError.
 func NewErr(op, kind string, err error) *obs.AppError {
 	return obs.NewErr(op, kind, err)
 }

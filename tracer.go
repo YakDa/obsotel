@@ -191,17 +191,19 @@ func defaultExporter(ctx context.Context) (sdktrace.SpanExporter, error) {
 		f, err := os.OpenFile(path,
 			os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
-			// Falling back to silent on file-open failure keeps the
-			// service working; logs reveal the actual cause. Close f in
-			// case OpenFile partially succeeded (rare but possible on
-			// Windows when O_CREATE|O_APPEND races).
-			f.Close()
+			// OpenFile returns (nil, err) on failure — f is always nil
+			// here. Don't call f.Close() on it: (*os.File).Close is
+			// nil-safe in the stdlib (returns ErrInvalid), so it's
+			// harmless, but it's also dead code that confuses readers.
+			// Fall back to silent; logs reveal the actual cause.
 			return silentExporter()
 		}
 		// stdouttrace.New doesn't own its writer — it only writes to it.
 		// Without wrapping, the FD leaks for the process lifetime.
 		inner, ierr := stdouttrace.New(stdouttrace.WithWriter(f))
 		if ierr != nil {
+			// f is non-nil here (we passed the err check above), so
+			// closing it is safe and necessary.
 			f.Close()
 			return silentExporter()
 		}
