@@ -38,11 +38,12 @@ func main() {
     log := obsotel.NewLogger(os.Getenv("ENV"))
     slog.SetDefault(log)
 
-    // 3. Wire up HTTP. Handler() wraps mux with otelhttp server span + obsbase
-    // logging. The obsotel.Handler internally calls obsotel.WithLogger on
-    // each request's context, so handlers downstream get request_id and
-    // trace_id injection for free. (slog.SetDefault is still useful as a
-    // fallback for goroutines that don't carry the request context — L(ctx)
+    // 3. Wire up HTTP. Handler() wraps mux with otelhttp server span +
+    // obsbase logging middleware. LoggingMiddleware calls WithLogger and
+    // WithRequestID on each request's context, so handlers downstream get
+    // request_id and trace_id injection for free. (slog.SetDefault is
+    // still useful as a fallback for goroutines that don't carry the
+    // request context — L(ctx)
     // returns slog.Default() when no logger is bound.)
     mux := http.NewServeMux()
     mux.HandleFunc("/foo", fooHandler)
