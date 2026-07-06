@@ -26,6 +26,44 @@ func captureLogger(level slog.Level) (*slog.Logger, *bytes.Buffer) {
 	return slog.New(h), buf
 }
 
+// captureChainedLogger is like captureLogger but wires up a request-id
+// handler that mirrors the production chain in obsotel.NewLoggerToWriter
+// (requestIDHandler -> JSONHandler). Use this in middleware tests that
+// expect request_id to flow through ctx; without the handler chain, the
+// middleware would have to bind request_id via With(), which is exactly
+// the bug we removed.
+func captureChainedLogger(level slog.Level) (*slog.Logger, *bytes.Buffer) {
+	buf := &bytes.Buffer{}
+	base := slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: level})
+	return slog.New(&testRequestIDHandler{base: base}), buf
+}
+
+// testRequestIDHandler mirrors obsotel.requestIDHandler for package-internal
+// tests: it reads request_id from ctx and prepends it to every record.
+// Fail-open: a missing ctx value is a no-op.
+type testRequestIDHandler struct {
+	base slog.Handler
+}
+
+func (h *testRequestIDHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.base.Enabled(ctx, level)
+}
+
+func (h *testRequestIDHandler) Handle(ctx context.Context, r slog.Record) error {
+	if rid := RequestIDFromContext(ctx); rid != "" {
+		r.AddAttrs(slog.String(RequestIDKey, rid))
+	}
+	return h.base.Handle(ctx, r)
+}
+
+func (h *testRequestIDHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &testRequestIDHandler{base: h.base.WithAttrs(attrs)}
+}
+
+func (h *testRequestIDHandler) WithGroup(name string) slog.Handler {
+	return &testRequestIDHandler{base: h.base.WithGroup(name)}
+}
+
 // decodeJSON parses the last line written to buf as a single JSON object.
 func decodeJSON(t *testing.T, buf *bytes.Buffer) map[string]any {
 	t.Helper()
@@ -364,7 +402,7 @@ func TestLogErr_NonAppError_NoOpKind(t *testing.T) {
 // ----------------------------------------------------------------------------
 
 func TestLoggingMiddleware_GeneratesRequestID(t *testing.T) {
-	l, buf := captureLogger(slog.LevelInfo)
+	l, buf := captureChainedLogger(slog.LevelInfo)
 	h := LoggingMiddleware(l)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// request_id should be readable from ctx inside the handler
 		if got := RequestIDFromContext(r.Context()); got == "" {
@@ -394,7 +432,7 @@ func TestLoggingMiddleware_GeneratesRequestID(t *testing.T) {
 }
 
 func TestLoggingMiddleware_ReusesIncomingRequestID(t *testing.T) {
-	l, buf := captureLogger(slog.LevelInfo)
+	l, buf := captureChainedLogger(slog.LevelInfo)
 	h := LoggingMiddleware(l)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	req := httptest.NewRequest("GET", "/foo", nil)
 	req.Header.Set("X-Request-ID", "incoming-123")
@@ -407,6 +445,26 @@ func TestLoggingMiddleware_ReusesIncomingRequestID(t *testing.T) {
 	logged := decodeJSON(t, buf)
 	if logged[RequestIDKey] != "incoming-123" {
 		t.Fatalf("expected request_id=incoming-123 in log, got %v", logged[RequestIDKey])
+	}
+}
+
+// TestLoggingMiddleware_NoDuplicateRequestID is the regression guard for the
+// duplicate-key bug. The middleware MUST NOT bake request_id into the logger
+// via With(); the handler chain is the single writer. We assert on the raw
+// JSON (not decoded) because json.Unmarshal silently last-wins and would
+// hide a duplicate.
+func TestLoggingMiddleware_NoDuplicateRequestID(t *testing.T) {
+	l, buf := captureChainedLogger(slog.LevelInfo)
+	h := LoggingMiddleware(l)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/foo", nil)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	if n := strings.Count(buf.String(), `"request_id"`); n != 1 {
+		t.Fatalf("expected exactly 1 occurrence of \"request_id\" in log, got %d\nlog: %s",
+			n, buf.String())
 	}
 }
 

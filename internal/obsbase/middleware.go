@@ -32,7 +32,6 @@ func LoggingMiddleware(base *slog.Logger) func(http.Handler) http.Handler {
 			}
 
 			l := base.With(
-				slog.String(RequestIDKey, reqID),
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
 				slog.String("remote", clientIP(r)),
