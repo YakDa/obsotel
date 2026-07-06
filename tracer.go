@@ -3,6 +3,9 @@ package obsotel
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
+	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
@@ -131,10 +134,43 @@ func WithExporter(exp sdktrace.SpanExporter) TracerOption {
 	}
 }
 
-// defaultExporter creates a stdout exporter (writes spans to stderr).
-// Useful for dev and tests. Replace via WithExporter for production.
+// defaultExporter creates a stdout exporter for dev. Destination is gated
+// on the OBSOTEL_DUMP_SPANS env var so service stderr stays readable for
+// slog by default:
+//
+//	OBSOTEL_DUMP_SPANS=""             → silent (spans still flow through SDK, just not dumped)
+//	OBSOTEL_DUMP_SPANS="stdout"       → multi-line pretty JSON on stderr (legacy)
+//	OBSOTEL_DUMP_SPANS="compact"      → single-line JSON on stderr
+//	OBSOTEL_DUMP_SPANS="file:/path"   → JSONL appended to /path
+//
+// Production callers should use WithExporter(otlpExporter); this default
+// only applies when InitTracer falls back to stdout.
 func defaultExporter(ctx context.Context) (sdktrace.SpanExporter, error) {
-	return stdouttrace.New(
-		stdouttrace.WithPrettyPrint(),
-	)
+	mode := os.Getenv("OBSOTEL_DUMP_SPANS")
+	switch {
+	case mode == "":
+		// Default: silent. Spans still flow through the SDK; we just
+		// don't serialize them anywhere.
+		return stdouttrace.New(stdouttrace.WithWriter(io.Discard))
+	case strings.HasPrefix(mode, "file:"):
+		path := strings.TrimPrefix(mode, "file:")
+		f, err := os.OpenFile(path,
+			os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			// Falling back to silent on file-open failure keeps the
+			// service working; logs reveal the actual cause.
+			return stdouttrace.New(stdouttrace.WithWriter(io.Discard))
+		}
+		return stdouttrace.New(stdouttrace.WithWriter(f))
+	case mode == "stdout":
+		// Legacy: pretty multi-line JSON on stderr.
+		return stdouttrace.New(stdouttrace.WithPrettyPrint())
+	case mode == "compact":
+		// Single-line JSON on stderr.
+		return stdouttrace.New()
+	default:
+		// Unknown mode → silent (not stderr, not file). Safer default
+		// than spamming an unexpected destination.
+		return stdouttrace.New(stdouttrace.WithWriter(io.Discard))
+	}
 }
