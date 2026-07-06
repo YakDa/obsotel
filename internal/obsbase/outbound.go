@@ -2,11 +2,41 @@ package obs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"time"
+
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// SafeURLString returns a logging-safe form of u: scheme + host + path,
+// with query and fragment stripped. Query strings commonly carry secrets
+// (api_key, token, signature) and must never appear in logs by default.
+//
+// Callers who need the full URL for debugging should add it as their own
+// attr; we deliberately don't surface it here because this is a contract
+// package and the safe-by-default rule beats the convenience-of-default
+// for the rare legitimate use case.
+//
+// Notes:
+//   - Userinfo (user:pass@) is also stripped because URLs in logs commonly
+//     embed credentials that way.
+//   - If u is nil, returns "".
+func SafeURLString(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	// Build a copy so we don't mutate the caller's *url.URL.
+	cp := *u
+	cp.RawQuery = ""
+	cp.Fragment = ""
+	cp.User = nil
+	return cp.String()
+}
 
 // DoRequest performs an outbound HTTP request and logs it. The request_id
 // from ctx is propagated as X-Request-ID so downstream services can
@@ -26,7 +56,7 @@ func DoRequest(ctx context.Context, client *http.Client, req *http.Request) (*ht
 
 	l := L(ctx).With(
 		slog.String("outbound_method", req.Method),
-		slog.String("outbound_url", req.URL.String()),
+		slog.String("outbound_url", SafeURLString(req.URL)),
 		slog.String("outbound_host", req.URL.Host),
 	)
 
@@ -35,7 +65,18 @@ func DoRequest(ctx context.Context, client *http.Client, req *http.Request) (*ht
 	dur := time.Since(start).Milliseconds()
 
 	if err != nil {
-		l.LogAttrs(ctx, slog.LevelError, "outbound_failed",
+		// Context cancellation is expected in production. Demote to WARN
+		// so alerts don't fire on every client-disconnected request.
+		level, msg := slog.LevelError, "outbound_failed"
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			level, msg = slog.LevelWarn, "outbound_cancelled"
+		}
+		// Mark the active span (if any) as errored.
+		if span := trace.SpanFromContext(ctx); span.IsRecording() {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		l.LogAttrs(ctx, level, msg,
 			slog.Int64("duration_ms", dur),
 			slog.String("err", err.Error()),
 			slog.Any("error_chain", ChainOf(err)),

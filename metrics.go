@@ -3,6 +3,8 @@ package obsotel
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"sync"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -11,6 +13,13 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+)
+
+// meterInitGuard protects against double InitMeter. See tracerInitGuard
+// in tracer.go for the rationale.
+var (
+	meterInitMu       sync.Mutex
+	previousMeterStop func(context.Context) error
 )
 
 // Counter is a monotonically-increasing counter (e.g. requests_total,
@@ -144,6 +153,20 @@ func InitMeter(ctx context.Context, serviceName string, opts ...MeterOption) (sh
 		opt(&cfg)
 	}
 
+	// Double-init guard: shut down any previously installed provider so
+	// we don't leak its periodic reader. See meterInitGuard comment.
+	meterInitMu.Lock()
+	if previousMeterStop != nil {
+		slog.Warn("obsotel: InitMeter called twice; shutting down previous provider",
+			slog.String("service", serviceName))
+		if sErr := previousMeterStop(ctx); sErr != nil {
+			slog.Warn("obsotel: previous meter shutdown error",
+				slog.String("err", sErr.Error()))
+		}
+		previousMeterStop = nil
+	}
+	meterInitMu.Unlock()
+
 	exp, err := cfg.exporterFactory(ctx)
 	if err != nil {
 		return func(context.Context) error { return nil },
@@ -168,6 +191,11 @@ func InitMeter(ctx context.Context, serviceName string, opts ...MeterOption) (sh
 	)
 
 	otel.SetMeterProvider(mp)
+
+	meterInitMu.Lock()
+	previousMeterStop = mp.Shutdown
+	meterInitMu.Unlock()
+
 	return mp.Shutdown, nil
 }
 

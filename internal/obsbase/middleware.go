@@ -97,6 +97,15 @@ func (r *statusRecorder) Flush() {
 	}
 }
 
+// Unwrap returns the underlying http.ResponseWriter so that callers using
+// http.NewResponseController (Go 1.20+) can discover optional interfaces
+// like SetReadDeadline/SetWriteDeadline/Hijack/Flusher on the original.
+// Without this, ResponseController.SetReadDeadline silently no-ops against
+// the recorder.
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
 // clientIP returns the best-guess client IP, honoring common proxy headers.
 //
 // SECURITY: X-Forwarded-For and X-Real-IP are trusted unconditionally. This is

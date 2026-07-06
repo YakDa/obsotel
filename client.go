@@ -2,12 +2,17 @@ package obsotel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
+	obs "github.com/YakDa/obsotel/internal/obsbase"
 )
 
 // NewClient returns an *http.Client with OTel client-side tracing enabled.
@@ -50,9 +55,14 @@ func DoRequest(ctx context.Context, req *http.Request) (*http.Response, error) {
 
 // DoRequestWithClient is DoRequest with an explicit client. Use this when
 // you need a custom timeout or transport on top of OTel.
+//
+// Passing nil is treated as 'use obsotel's default client' rather than
+// creating a new client per call. Creating a fresh *http.Client (and
+// underlying otelhttp.Transport) per call leaks idle connections — each
+// transport keeps its own pool.
 func DoRequestWithClient(ctx context.Context, client *http.Client, req *http.Request) (*http.Response, error) {
 	if client == nil {
-		client = NewClient()
+		client = defaultClient
 	}
 	if reqID := RequestIDFromContext(ctx); reqID != "" && req.Header.Get("X-Request-ID") == "" {
 		req.Header.Set("X-Request-ID", reqID)
@@ -60,7 +70,7 @@ func DoRequestWithClient(ctx context.Context, client *http.Client, req *http.Req
 
 	l := L(ctx).With(
 		slog.String("outbound_method", req.Method),
-		slog.String("outbound_url", req.URL.String()),
+		slog.String("outbound_url", obs.SafeURLString(req.URL)),
 		slog.String("outbound_host", req.URL.Host),
 	)
 
@@ -69,7 +79,23 @@ func DoRequestWithClient(ctx context.Context, client *http.Client, req *http.Req
 	dur := time.Since(start).Milliseconds()
 
 	if err != nil {
-		l.LogAttrs(ctx, slog.LevelError, "outbound_failed",
+		// Context cancellation is expected in production (client
+		// disconnected, request deadline exceeded). Demoting to WARN avoids
+		// alerting noise from these expected paths. Genuine transport
+		// failures (DNS, TCP, TLS, etc.) stay at ERROR.
+		level, msg := slog.LevelError, "outbound_failed"
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			level, msg = slog.LevelWarn, "outbound_cancelled"
+		}
+		// Mark the active span (if any) as errored. Trace UIs (Jaeger,
+		// Tempo, Honeycomb) surface failed spans via SetStatus(Error).
+		// Without this, the client span looks successful even though the
+		// call returned a transport error.
+		if span := trace.SpanFromContext(ctx); span.IsRecording() {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		l.LogAttrs(ctx, level, msg,
 			slog.Int64("duration_ms", dur),
 			slog.String("err", err.Error()),
 			slog.Any("error_chain", ChainOf(err)),

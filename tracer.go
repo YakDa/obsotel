@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
+	"sync"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
@@ -14,6 +16,20 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
+)
+
+// tracerInitGuard protects against double InitTracer. Calling InitTracer
+// twice silently overwrites the previous global TracerProvider, leaking
+// its batcher goroutines and any unflushed spans.
+//
+// On second call, we log a WARN, shut down the previous provider to flush
+// any pending spans, then proceed with the new init. This is safer than
+// either silently no-op'ing (caller never knows the second call was
+// dropped) or panicking (breaks test setup that legitimately calls init
+// twice).
+var (
+	tracerInitMu       sync.Mutex
+	previousTracerStop func(context.Context) error
 )
 
 // InitTracer sets up the global OTel TracerProvider and W3C TraceContext
@@ -31,6 +47,20 @@ func InitTracer(ctx context.Context, serviceName string, opts ...TracerOption) (
 	for _, opt := range opts {
 		opt(&cfg)
 	}
+
+	// Double-init guard: shut down any previously installed provider so
+	// we don't leak its batcher. See tracerInitGuard comment.
+	tracerInitMu.Lock()
+	if previousTracerStop != nil {
+		slog.Warn("obsotel: InitTracer called twice; shutting down previous provider",
+			slog.String("service", serviceName))
+		if sErr := previousTracerStop(ctx); sErr != nil {
+			slog.Warn("obsotel: previous tracer shutdown error",
+				slog.String("err", sErr.Error()))
+		}
+		previousTracerStop = nil
+	}
+	tracerInitMu.Unlock()
 
 	exp, err := cfg.exporterFactory(ctx)
 	if err != nil {
@@ -61,6 +91,10 @@ func InitTracer(ctx context.Context, serviceName string, opts ...TracerOption) (
 		propagation.TraceContext{},
 		propagation.Baggage{},
 	))
+
+	tracerInitMu.Lock()
+	previousTracerStop = tp.Shutdown
+	tracerInitMu.Unlock()
 
 	return tp.Shutdown, nil
 }
@@ -151,26 +185,74 @@ func defaultExporter(ctx context.Context) (sdktrace.SpanExporter, error) {
 	case mode == "":
 		// Default: silent. Spans still flow through the SDK; we just
 		// don't serialize them anywhere.
-		return stdouttrace.New(stdouttrace.WithWriter(io.Discard))
+		return silentExporter()
 	case strings.HasPrefix(mode, "file:"):
 		path := strings.TrimPrefix(mode, "file:")
 		f, err := os.OpenFile(path,
 			os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
 			// Falling back to silent on file-open failure keeps the
-			// service working; logs reveal the actual cause.
-			return stdouttrace.New(stdouttrace.WithWriter(io.Discard))
+			// service working; logs reveal the actual cause. Close f in
+			// case OpenFile partially succeeded (rare but possible on
+			// Windows when O_CREATE|O_APPEND races).
+			f.Close()
+			return silentExporter()
 		}
-		return stdouttrace.New(stdouttrace.WithWriter(f))
+		// stdouttrace.New doesn't own its writer — it only writes to it.
+		// Without wrapping, the FD leaks for the process lifetime.
+		inner, ierr := stdouttrace.New(stdouttrace.WithWriter(f))
+		if ierr != nil {
+			f.Close()
+			return silentExporter()
+		}
+		return &fileExporter{
+			exporter: inner,
+			file:     f,
+		}, nil
 	case mode == "stdout":
 		// Legacy: pretty multi-line JSON on stderr.
-		return stdouttrace.New(stdouttrace.WithPrettyPrint())
+		exp, _ := stdouttrace.New(stdouttrace.WithPrettyPrint())
+		return exp, nil
 	case mode == "compact":
 		// Single-line JSON on stderr.
-		return stdouttrace.New()
+		exp, _ := stdouttrace.New()
+		return exp, nil
 	default:
 		// Unknown mode → silent (not stderr, not file). Safer default
 		// than spamming an unexpected destination.
-		return stdouttrace.New(stdouttrace.WithWriter(io.Discard))
+		return silentExporter()
 	}
+}
+
+// silentExporter returns a stdouttrace exporter that drops all spans.
+// Used as the default and as the fallback for failed setup paths. The
+// exporter is created fresh per call because stdouttrace.New returns a
+// pointer that gets bound to the SDK's tracer provider; cheap to make
+// (just a struct) but only invoked at startup so per-call cost is fine.
+func silentExporter() (sdktrace.SpanExporter, error) {
+	exp, _ := stdouttrace.New(stdouttrace.WithWriter(io.Discard))
+	return exp, nil
+}
+
+// fileExporter wraps a stdouttrace exporter and a file handle, closing the
+// handle on Shutdown. Needed because stdouttrace.New only uses its writer;
+// it does not own or close it. Without this wrapper, the file: exporter
+// mode leaks a FD for the lifetime of the process.
+//
+// All other SpanExporter methods are pass-through.
+type fileExporter struct {
+	exporter sdktrace.SpanExporter
+	file     *os.File
+}
+
+func (fe *fileExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
+	return fe.exporter.ExportSpans(ctx, spans)
+}
+
+func (fe *fileExporter) Shutdown(ctx context.Context) error {
+	err := fe.exporter.Shutdown(ctx)
+	if cerr := fe.file.Close(); cerr != nil && err == nil {
+		err = cerr
+	}
+	return err
 }

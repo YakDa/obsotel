@@ -2,6 +2,7 @@ package obsotel
 
 import (
 	"context"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -137,4 +138,87 @@ func TestDefaultExporter_DocMatchesEnv(t *testing.T) {
 			t.Fatalf("mode %q: %v", m, err)
 		}
 	}
+}
+
+// TestDefaultExporter_FileMode_ClosesFD guards against the file-descriptor
+// leak that motivated the fileExporter wrapper. Without it, stdouttrace.New
+// does not own its writer, so the FD stays open for the process lifetime.
+//
+// The test calls Shutdown on the returned exporter, then verifies the FD
+// is closed by trying to stat/use the file via a syscall (a closed FD
+// returns EBADF on subsequent operations, or the path is unlinked).
+func TestDefaultExporter_FileMode_ClosesFD(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "spans.jsonl")
+	t.Setenv("OBSOTEL_DUMP_SPANS", "file:"+path)
+
+	ctx := context.Background()
+	exp, err := defaultExporter(ctx)
+	if err != nil {
+		t.Fatalf("defaultExporter(file): %v", err)
+	}
+
+	// Drive a span through the exporter so the writer is actually used.
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	_, span := tp.Tracer("test").Start(ctx, "fd-check")
+	span.End()
+
+	// Shutdown should close the file.
+	if err := tp.Shutdown(ctx); err != nil {
+		t.Fatalf("tp.Shutdown: %v", err)
+	}
+
+	// After shutdown, attempting to write to the closed file should
+	// fail. Use the exporter's underlying file indirectly by trying to
+	// open it exclusively — if the FD is held, we may still get EBUSY on
+	// some platforms, but on Linux we can detect closure by trying to
+	// remove the file (succeeds when nothing holds it).
+	// A more reliable check: use the fileExporter type assertion.
+	if fe, ok := exp.(*fileExporter); ok {
+		// Use the file's underlying FD to confirm closure.
+		// Write should fail with ErrClosed after Shutdown.
+		_, werr := fe.file.Write([]byte("post-close\n"))
+		if werr == nil {
+			t.Fatalf("file still writable after Shutdown; FD not closed")
+		}
+		_ = werr // any error means the FD is closed, which is what we want
+	} else {
+		t.Fatalf("expected *fileExporter, got %T", exp)
+	}
+}
+
+// TestSafeURLString verifies that query strings, fragments, and userinfo
+// are stripped from URLs before logging. This is a security regression
+// guard — the original code logged req.URL.String() which leaked
+// api_keys, tokens, and other secrets from query parameters.
+func TestSafeURLString(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"no query", "https://api.example.com/users/42", "https://api.example.com/users/42"},
+		{"with secret query", "https://api.example.com/users?api_key=secret123", "https://api.example.com/users"},
+		{"with token + signature", "https://pay.example.com/charge?token=tok_abc&sig=xyz", "https://pay.example.com/charge"},
+		{"with fragment", "https://api.example.com/path#frag", "https://api.example.com/path"},
+		{"with userinfo", "https://user:pass@api.example.com/secret", "https://api.example.com/secret"},
+		{"with port", "https://api.example.com:8443/v1/users", "https://api.example.com:8443/v1/users"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			u, err := neturl.Parse(tc.in)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			got := SafeURLString(u)
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("nil URL", func(t *testing.T) {
+		if got := SafeURLString(nil); got != "" {
+			t.Errorf("nil URL: got %q, want empty", got)
+		}
+	})
 }

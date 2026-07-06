@@ -23,6 +23,7 @@ package obsotel
 import (
 	"context"
 	"log/slog"
+	"net/url"
 
 	obs "github.com/YakDa/obsotel/internal/obsbase"
 )
@@ -104,3 +105,12 @@ type AppError = obs.AppError
 
 // ErrorChain is the chain of wrapped errors. Type alias of internal/obsbase.
 type ErrorChain = obs.ErrorChain
+
+// SafeURLString returns a logging-safe form of u: scheme + host + path,
+// with query, fragment, and userinfo stripped. Query strings commonly
+// carry secrets (api_key, token, signature) and must never appear in
+// logs by default. Re-exported from internal/obsbase so services have
+// a single import path for the helper.
+func SafeURLString(u *url.URL) string {
+	return obs.SafeURLString(u)
+}
