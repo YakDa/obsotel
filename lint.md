@@ -28,30 +28,38 @@ linters:
 linters-settings:
   forbidigo:
     # Ban unstructured / uncorrelated output entirely.
-    # If you see one of these, use slog or obs.LogErr instead.
+    # All messages point at the obsotel instance-method API (the blessed
+    # surface), NOT at package-level slog.* — those are banned by sloglint's
+    # no-global rule, so telling the developer to "use slog.Info instead"
+    # would just push them into the next lint violation.
     forbid:
+      # Print* → log at INFO via the ctx-bound logger
       - pattern: "fmt\\.Println"
-        msg: "use slog.Info instead — see github.com/YakDa/obsotel"
+        msg: "use obsotel.L(ctx).InfoContext(ctx, ...) — see github.com/YakDa/obsotel"
       - pattern: "fmt\\.Print\\b"
-        msg: "use slog.Info instead — see github.com/YakDa/obsotel"
+        msg: "use obsotel.L(ctx).InfoContext(ctx, ...) — see github.com/YakDa/obsotel"
       - pattern: "fmt\\.Printf"
-        msg: "use slog.Info with structured fields instead — see github.com/YakDa/obsotel"
+        msg: "use obsotel.L(ctx).InfoContext(ctx, \"msg\", \"key\", val, ...) — see github.com/YakDa/obsotel"
       - pattern: "log\\.Println"
-        msg: "use slog.Info instead — see github.com/YakDa/obsotel"
+        msg: "use obsotel.L(ctx).InfoContext(ctx, ...) — see github.com/YakDa/obsotel"
       - pattern: "log\\.Print\\b"
-        msg: "use slog.Info instead — see github.com/YakDa/obsotel"
+        msg: "use obsotel.L(ctx).InfoContext(ctx, ...) — see github.com/YakDa/obsotel"
       - pattern: "log\\.Printf"
-        msg: "use slog.Info with structured fields instead — see github.com/YakDa/obsotel"
+        msg: "use obsotel.L(ctx).InfoContext(ctx, \"msg\", \"key\", val, ...) — see github.com/YakDa/obsotel"
+      # Fatal* → log at ERROR + os.Exit(1) in main(). Never combine
+      # logging + exit at the call site; deferred cleanup needs to run.
       - pattern: "log\\.Fatal\\b"
-        msg: "use slog.Error + os.Exit instead — see github.com/YakDa/obsotel"
+        msg: "use obsotel.L(ctx).ErrorContext(ctx, ...) + os.Exit(1) — see github.com/YakDa/obsotel"
       - pattern: "log\\.Fatalf"
-        msg: "use slog.Error with structured fields + os.Exit instead — see github.com/YakDa/obsotel"
+        msg: "use obsotel.L(ctx).ErrorContext(ctx, \"msg\", \"key\", val, ...) + os.Exit(1) — see github.com/YakDa/obsotel"
       - pattern: "log\\.Fatalln"
-        msg: "use slog.Error + os.Exit instead — see github.com/YakDa/obsotel"
+        msg: "use obsotel.L(ctx).ErrorContext(ctx, ...) + os.Exit(1) — see github.com/YakDa/obsotel"
+      # Panic* → log at ERROR and return the error. log.Panic prints AND
+      # panics — both undesirable. Never reach for panic for control flow.
       - pattern: "log\\.Panic\\b"
-        msg: "use slog.Error instead — log.Panic prints and panics, neither is what you want"
+        msg: "use obsotel.L(ctx).ErrorContext(ctx, ...) and return the error — see github.com/YakDa/obsotel"
       - pattern: "log\\.Panicf"
-        msg: "use slog.Error instead — log.Panic prints and panics, neither is what you want"
+        msg: "use obsotel.L(ctx).ErrorContext(ctx, \"msg\", \"key\", val, ...) and return the error — see github.com/YakDa/obsotel"
 
       # The slog-contract rules below live in sloglint (AST-based, no regex).
       # What sloglint CAN'T enforce is the obsotel-specific contract:
@@ -127,6 +135,31 @@ linters-settings:
 | Any global `slog.*` call (sloglint `no-global: all`) | Package-level functions mutate global state. Even legitimate `slog.SetDefault` from `main()` is flagged — see next section. |
 | `fmt.Errorf("...: %v", err)` (errorlint) | Destroys the wrap chain. Use `%w` or `obsotel.Wrap(ctx, err, op)`. |
 | `slog.Info(fmt.Sprintf(...))` (sloglint `static-msg`) | Dynamic message = unsearchable. Logs must be string literals. |
+
+## What stays legal (the positive side of the contract)
+
+The forbidden list above is the negative side. The positive side — what to *write* — is small and stable:
+
+<pre><code class="language-go">log := obsotel.L(ctx)                     // ctx-bound logger (or slog.Default() if no ctx-bound one)
+
+// Structured, correlated, ctx-aware:
+log.InfoContext(ctx, "user logged in", "user_id", id)
+log.WarnContext(ctx, "rate limit near",  "remaining", n)
+log.ErrorContext(ctx, "request failed",  "path", path, "status", status)
+log.DebugContext(ctx, "cache miss",      "key", key)
+
+// For errors specifically — preferred over ErrorContext because it
+// preserves the error_chain array and AppError Meta fields:
+obsotel.LogErr(ctx, "payment_capture_failed", err, "user_id", id)
+
+// Install the logger once, in main():
+//nolint:sloglint
+slog.SetDefault(obsotel.NewLogger("prod"))
+</code></pre>
+
+All five shapes are allowed by the lint config. The first four use *instance methods*, which are the only slog-call shape that survives both `no-global: all` and `context: all`. The last is the one blessed `slog.SetDefault` site.
+
+If you're tempted to add a new pattern to forbidigo that bans one of these — stop. The rule is already in place; the fix is the caller, not the linter.
 
 ## The slog.SetDefault problem
 
@@ -231,8 +264,9 @@ If your service uses Go 1.23+ or newer, bump the version accordingly. golangci-l
 
 ## TL;DR
 
-- **Banned in production code (forbidigo):** `fmt.Print*`, `log.Print*`, `log.Fatal*`, `log.Panic*`, `slog.Error(...)`, `slog.ErrorContext(...)`.
+- **Banned in production code (forbidigo):** `fmt.Print*`, `log.Print*`, `log.Fatal*`, `log.Panic*`, `slog.Error(...)`, `slog.ErrorContext(...)`. Error messages all point at the obsotel instance-method API (`obsotel.L(ctx).XxxContext`, `obsotel.LogErr`) — not at package-level `slog.*`, which is banned by sloglint.
 - **Banned via sloglint (AST, no regex):** bare `slog.Info/Warn/Error/Debug` without `-Context`; any package-level `slog.*` call (including `SetDefault`); dynamic messages via `fmt.Sprintf`.
 - **Banned via errorlint:** `fmt.Errorf("...: %v", err)` — use `%w` or `obsotel.Wrap`.
+- **What to write instead:** `obsotel.L(ctx).InfoContext(ctx, "msg", "key", val)` / `obsotel.L(ctx).ErrorContext(ctx, ...)` / `obsotel.LogErr(ctx, msg, err, attrs...)`. See the "What stays legal" section above for the canonical patterns.
 - **`slog.SetDefault` in `main()`:** the one legitimate escape hatch — `//nolint:sloglint` at the single call site today, or `obsotel.SetDefault(log)` once that helper lands.
 - **CI enforces, code review doesn't.** AI retrofit is only durable if the linter holds the line.
