@@ -168,7 +168,7 @@ func DoRequestWithRetryAndClient(
 			lastErr = err
 		} else {
 			lastErr = &HTTPError{Status: resp.StatusCode}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		lastResp = nil
 

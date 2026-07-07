@@ -57,8 +57,8 @@ func TestWrap_AttachesRequestID(t *testing.T) {
 	ctx := obsotel.WithRequestID(context.Background(), "rid-1")
 	err := obsotel.Wrap(ctx, errors.New("boom"), "do_stuff")
 
-	ae, ok := err.(*obsotel.AppError)
-	if !ok {
+	var ae *obsotel.AppError
+	if !errors.As(err, &ae) {
 		t.Fatalf("expected *AppError, got %T", err)
 	}
 	if ae.Op != "do_stuff" {
@@ -87,7 +87,10 @@ func TestWrapWith_AddsMetadata(t *testing.T) {
 	err := obsotel.WrapWith(ctx, errors.New("boom"), "load_user",
 		"user_id", "u42", "tenant", "t1")
 
-	ae := err.(*obsotel.AppError)
+	var ae *obsotel.AppError
+	if !errors.As(err, &ae) {
+		t.Fatalf("expected *AppError, got %T", err)
+	}
 	if ae.Meta["user_id"] != "u42" || ae.Meta["tenant"] != "t1" {
 		t.Fatalf("metadata missing: %#v", ae.Meta)
 	}
@@ -375,4 +378,3 @@ func TestInitMeter_ReturnsShutdown(t *testing.T) {
 		t.Fatalf("shutdown: %v", err)
 	}
 }
-

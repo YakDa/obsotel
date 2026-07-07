@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"sort"
 	"strings"
 )
@@ -58,7 +59,8 @@ type ErrorChain []error
 func (c ErrorChain) LogValue() slog.Value {
 	parts := make([]map[string]any, len(c))
 	for i, e := range c {
-		if ae, ok := e.(*AppError); ok {
+		var ae *AppError
+		if errors.As(e, &ae) {
 			parts[i] = map[string]any{"cause": ae.Error()}
 		} else {
 			parts[i] = map[string]any{"error": e.Error()}
@@ -199,9 +201,7 @@ func (e *AppError) WithMeta(kv ...any) *AppError {
 		cp.Meta = make(map[string]any, len(kv)/2)
 	} else {
 		m := make(map[string]any, len(cp.Meta)+len(kv)/2)
-		for k, v := range cp.Meta {
-			m[k] = v
-		}
+		maps.Copy(m, cp.Meta)
 		cp.Meta = m
 	}
 	for i := 0; i+1 < len(kv); i += 2 {
@@ -250,7 +250,7 @@ func WrapWith(ctx context.Context, err error, op string, kv ...any) error {
 	if err == nil {
 		return nil
 	}
-	ae := Wrap(ctx, err, op).(*AppError)
+	ae := Wrap(ctx, err, op).(*AppError) //nolint:errorlint // Wrap always returns *AppError
 	return ae.WithMeta(kv...)
 }
 
@@ -295,7 +295,7 @@ func LogErr(ctx context.Context, msg string, err error, attrs ...any) {
 	// to top level. That's intentional — wrapping then adds an outer layer
 	// that owns the new top-level semantics. If you want op/kind of the
 	// inner AppError to still surface, errors.As it before logging.
-	if ae, ok := err.(*AppError); ok {
+	if ae, ok := err.(*AppError); ok { //nolint:errorlint // intentional top-level-only check
 		args = append(args,
 			slog.String("op", ae.Op),
 			slog.String("kind", ae.Kind),

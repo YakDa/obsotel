@@ -181,10 +181,10 @@ func TestChainOf_WalksWrapped(t *testing.T) {
 	if len(chain) != 3 {
 		t.Fatalf("expected chain length 3, got %d: %#v", len(chain), chain)
 	}
-	if chain[0] != top {
+	if !errors.Is(chain[0], top) {
 		t.Fatalf("chain[0] should be top, got %v", chain[0])
 	}
-	if chain[len(chain)-1] != root {
+	if !errors.Is(chain[len(chain)-1], root) {
 		t.Fatalf("last element should be root, got %v", chain[len(chain)-1])
 	}
 }
@@ -259,8 +259,8 @@ func TestWrap_AttachesRequestID(t *testing.T) {
 	ctx := WithRequestID(context.Background(), "req-abc")
 	err := Wrap(ctx, errors.New("boom"), "load_user")
 
-	ae, ok := err.(*AppError)
-	if !ok {
+	var ae *AppError
+	if !errors.As(err, &ae) {
 		t.Fatalf("expected *AppError, got %T", err)
 	}
 	if ae.Op != "load_user" {
@@ -491,8 +491,6 @@ func TestLoggingMiddleware_LogsNonZeroStatus(t *testing.T) {
 	}
 }
 
-
-
 // ----------------------------------------------------------------------------
 // Sampler
 // ----------------------------------------------------------------------------
@@ -571,13 +569,13 @@ func TestConcurrent_WrapAndLogErr(t *testing.T) {
 // string.
 //
 // Two paths to verify:
-//   1. *AppError entries land as maps with a `cause` field (the rendered
-//      Error() of that layer). Op/kind/meta are intentionally absent —
-//      they already appear at the TOP LEVEL of the log line, and including
-//      them in every chain entry would duplicate data without adding
-//      query power for the common case.
-//   2. Plain error entries land as single-key maps `{"error": "..."}`
-//      (the stdlib fallback).
+//  1. *AppError entries land as maps with a `cause` field (the rendered
+//     Error() of that layer). Op/kind/meta are intentionally absent —
+//     they already appear at the TOP LEVEL of the log line, and including
+//     them in every chain entry would duplicate data without adding
+//     query power for the common case.
+//  2. Plain error entries land as single-key maps `{"error": "..."}`
+//     (the stdlib fallback).
 //
 // Why a uniform shape: mixing strings and groups in the same array would
 // force every consumer to know which index is which type. Every entry is
@@ -605,7 +603,6 @@ func TestErrorChain_LogValue_Structured(t *testing.T) {
 	if !ok {
 		if cl, ok2 := partsAny.(chainList); ok2 {
 			parts = []map[string]any(cl)
-			ok = true
 		} else {
 			t.Fatalf("expected KindAny to wrap a []map[string]any, got %T: %#v", partsAny, partsAny)
 		}
@@ -728,10 +725,12 @@ func TestLogErr_StructuredChain_NotColonJammed(t *testing.T) {
 // at the top level of the log line.
 //
 // Before chain-simplification fix (env != "prod" / dev):
-//   error_chain="[map[op:do_stuff kind:internal] map[error:boom]]"
+//
+//	error_chain="[map[op:do_stuff kind:internal] map[error:boom]]"
 //
 // After both fixes:
-//   error_chain="[0] cause=top_op: not_found: mid_op: infra_error: dial tcp: nope | [1] cause=mid_op: infra_error: dial tcp: nope | [2] error=dial tcp: nope"
+//
+//	error_chain="[0] cause=top_op: not_found: mid_op: infra_error: dial tcp: nope | [1] cause=mid_op: infra_error: dial tcp: nope | [2] error=dial tcp: nope"
 func TestErrorChain_TextHandler_RendersReadable(t *testing.T) {
 	var buf bytes.Buffer
 	l := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))

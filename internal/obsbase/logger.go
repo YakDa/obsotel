@@ -8,7 +8,6 @@
 //   - context.go:      bind a logger to context.Context, propagate it
 //   - request_id.go:   UUID-like request ID generator (no external dep)
 //   - middleware.go:   HTTP middleware that injects request_id + logs
-//   - outbound.go:     HTTP client wrapper that propagates request_id + logs
 //   - errors.go:       ErrorChain (Go 1.13+ wrap), AppError, LogErr
 //   - sampling.go:     deterministic + random samplers for hot paths
 package obs

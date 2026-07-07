@@ -204,7 +204,7 @@ func defaultExporter(ctx context.Context) (sdktrace.SpanExporter, error) {
 		if ierr != nil {
 			// f is non-nil here (we passed the err check above), so
 			// closing it is safe and necessary.
-			f.Close()
+			_ = f.Close()
 			return silentExporter()
 		}
 		return &fileExporter{
