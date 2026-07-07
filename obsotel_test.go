@@ -15,6 +15,7 @@ import (
 	"github.com/YakDa/obsotel"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -376,5 +377,159 @@ func TestInitMeter_ReturnsShutdown(t *testing.T) {
 	// Calling shutdown should not panic.
 	if err := shutdown(context.Background()); err != nil {
 		t.Fatalf("shutdown: %v", err)
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Trace context propagation (InjectTraceContext / ExtractTraceContext)
+// ----------------------------------------------------------------------------
+
+func TestInjectTraceContext_InsertsTraceparent(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	defer tp.Shutdown(context.Background())
+
+	// Start a span so ctx has a valid trace context.
+	ctx, span := obsotel.StartSpan(context.Background(), "enqueue")
+	defer span.End()
+
+	payload := json.RawMessage(`{"kind":"fm","case_id":42}`)
+	result := obsotel.InjectTraceContext(ctx, payload)
+
+	var m map[string]any
+	if err := json.Unmarshal(result, &m); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	tp2, ok := m["trace_parent"].(string)
+	if !ok || tp2 == "" {
+		t.Fatalf("expected trace_parent in payload, got: %s", string(result))
+	}
+	if !strings.HasPrefix(tp2, "00-") {
+		t.Fatalf("trace_parent should be W3C format (00-...), got %q", tp2)
+	}
+	// Original fields preserved.
+	if m["kind"] != "fm" {
+		t.Fatalf("expected kind=fm preserved, got %v", m["kind"])
+	}
+	if m["case_id"] != float64(42) {
+		t.Fatalf("expected case_id=42 preserved, got %v", m["case_id"])
+	}
+}
+
+func TestInjectTraceContext_NoSpan_PassesThrough(t *testing.T) {
+	// No tracer provider / no active span — payload should be unchanged.
+	otel.SetTracerProvider(sdktrace.NewTracerProvider()) // no-op provider
+	payload := json.RawMessage(`{"key":"value"}`)
+	result := obsotel.InjectTraceContext(context.Background(), payload)
+
+	if string(result) != string(payload) {
+		t.Fatalf("expected unchanged payload, got: %s", string(result))
+	}
+}
+
+func TestInjectTraceContext_InvalidJSON_PassesThrough(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	defer tp.Shutdown(context.Background())
+
+	ctx, span := obsotel.StartSpan(context.Background(), "enqueue")
+	defer span.End()
+
+	bad := json.RawMessage(`not valid json`)
+	result := obsotel.InjectTraceContext(ctx, bad)
+
+	if string(result) != string(bad) {
+		t.Fatalf("expected unchanged payload for invalid json, got: %s", string(result))
+	}
+}
+
+func TestExtractTraceContext_CreatesChildSpan(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	defer tp.Shutdown(context.Background())
+
+	// Simulate: inject at enqueue side.
+	ctx, parentSpan := obsotel.StartSpan(context.Background(), "enqueue")
+	payload := json.RawMessage(`{"msg":"hello"}`)
+	payload = obsotel.InjectTraceContext(ctx, payload)
+	parentSpan.End()
+
+	// Simulate: extract at dequeue side.
+	ctx2, childSpan := obsotel.ExtractTraceContext(context.Background(), payload, "queue.handle")
+	_ = ctx2
+	childSpan.End()
+
+	// Should have 2 spans: enqueue + queue.handle
+	spans := recorder.Ended()
+	if len(spans) != 2 {
+		t.Fatalf("expected 2 spans, got %d", len(spans))
+	}
+
+	// Both spans should share the same trace ID (parent-child).
+	enqueueSpan := spans[0]
+	handleSpan := spans[1]
+	if enqueueSpan.SpanContext().TraceID() != handleSpan.SpanContext().TraceID() {
+		t.Fatalf("trace IDs differ: enqueue=%s handle=%s",
+			enqueueSpan.SpanContext().TraceID(),
+			handleSpan.SpanContext().TraceID())
+	}
+
+	// The handle span's parent should be the enqueue span.
+	if handleSpan.Parent().SpanID() != enqueueSpan.SpanContext().SpanID() {
+		t.Fatalf("handle span parent=%s, expected enqueue span=%s",
+			handleSpan.Parent().SpanID(),
+			enqueueSpan.SpanContext().SpanID())
+	}
+
+	if handleSpan.Name() != "queue.handle" {
+		t.Fatalf("expected span name=queue.handle, got %s", handleSpan.Name())
+	}
+}
+
+func TestExtractTraceContext_NoTraceParent_CreatesRootSpan(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	defer tp.Shutdown(context.Background())
+
+	// Payload without trace_parent key.
+	payload := json.RawMessage(`{"msg":"hello"}`)
+	_, span := obsotel.ExtractTraceContext(context.Background(), payload, "queue.handle")
+	span.End()
+
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	// Root span has no valid parent.
+	if spans[0].Parent().IsValid() {
+		t.Fatalf("expected root span (no parent), got parent=%s", spans[0].Parent().SpanID())
+	}
+}
+
+func TestExtractTraceContext_InvalidJSON_CreatesRootSpan(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	defer tp.Shutdown(context.Background())
+
+	bad := json.RawMessage(`not json`)
+	_, span := obsotel.ExtractTraceContext(context.Background(), bad, "queue.handle")
+	span.End()
+
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	if spans[0].Parent().IsValid() {
+		t.Fatalf("expected root span for invalid json, got parent=%s", spans[0].Parent().SpanID())
 	}
 }
