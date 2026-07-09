@@ -1,7 +1,7 @@
 // Package obsgin provides Gin-specific observability helpers built on top of
 // the framework-agnostic obsotel package. Import as:
 //
-//	import "thedesk/internal/obsotel/gin"
+//	import "github.com/YakDa/obsotel/gin"
 //
 // The sub-package isolates the gin dependency so the root obsotel package
 // remains usable from non-Gin services (gRPC, plain net/http, workers, etc.).
