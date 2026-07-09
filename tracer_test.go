@@ -106,8 +106,8 @@ func TestDefaultExporter_Modes(t *testing.T) {
 // strips the prefix and uses PATH as the destination. Guards against
 // a refactor that drops the prefix strip.
 func TestDefaultExporter_FileMode_PathArgument(t *testing.T) {
-	t.Setenv("OBSOTEL_DUMP_SPANS", "file:/tmp/obsotel-test-spans-arg.jsonl")
-	defer os.Remove("/tmp/obsotel-test-spans-arg.jsonl") // best-effort
+	path := filepath.Join(t.TempDir(), "obsotel-test-spans-arg.jsonl")
+	t.Setenv("OBSOTEL_DUMP_SPANS", "file:"+path)
 
 	exp, err := defaultExporter(context.Background())
 	if err != nil {
@@ -119,9 +119,9 @@ func TestDefaultExporter_FileMode_PathArgument(t *testing.T) {
 	_, span := tp.Tracer("test").Start(context.Background(), "smoke")
 	span.End()
 
-	if _, err := os.Stat("/tmp/obsotel-test-spans-arg.jsonl"); err != nil {
-		t.Fatalf("expected file at /tmp/obsotel-test-spans-arg.jsonl: %v\n"+
-			"(the file mode probably didn't strip its prefix correctly)", err)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected file at %s: %v\n"+
+			"(the file mode probably didn't strip its prefix correctly)", path, err)
 	}
 }
 

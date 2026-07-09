@@ -31,9 +31,9 @@ func Handler(log *slog.Logger, next http.Handler, serviceName string) http.Handl
 // HandlerWithFilter is Handler but allows opting out of tracing for specific
 // routes (e.g. /healthz, /metrics). Pass a function that returns true to trace.
 //
-// Requests for which shouldTrace returns false are served by the logging
-// middleware directly, bypassing otelhttp entirely (no server span created,
-// no W3C traceparent injection).
+// Requests for which shouldTrace returns false are served directly by the
+// underlying handler, bypassing both otelhttp and the logging middleware
+// (no server span, no access log line). This prevents health-check noise.
 //
 //	obsotel.HandlerWithFilter(log, mux, "user-service",
 //	    func(r *http.Request) bool { return r.URL.Path != "/healthz" })
@@ -47,7 +47,7 @@ func HandlerWithFilter(
 	otelWrapped := otelhttp.NewHandler(logging, serviceName)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if shouldTrace != nil && !shouldTrace(r) {
-			logging.ServeHTTP(w, r)
+			next.ServeHTTP(w, r)
 			return
 		}
 		otelWrapped.ServeHTTP(w, r)

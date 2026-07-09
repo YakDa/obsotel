@@ -70,8 +70,7 @@ func InitTracer(ctx context.Context, serviceName string, opts ...TracerOption) (
 
 	res, err := resource.Merge(
 		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
+		resource.NewSchemaless(
 			semconv.ServiceName(serviceName),
 		),
 	)

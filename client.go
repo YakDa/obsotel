@@ -192,12 +192,28 @@ func DoRequestWithRetryAndClient(
 	return lastResp, lastErr
 }
 
-// HTTPError is returned by DoRequestWithRetry for non-retryable-or-final
-// 5xx responses. Implements error.
+// HTTPError is an error that carries an HTTP status code.
+//
+// Used by:
+//   - DoRequestWithRetry: Status only (Message and Err zero) for 5xx responses.
+//   - WrapHandler / HTTPErr: Status + Message + Err for handler error responses.
 type HTTPError struct {
-	Status int
+	Status  int
+	Message string // client-facing message (if empty, falls back to cause or status text)
+	Err     error  // underlying cause (may be nil)
 }
 
 func (e *HTTPError) Error() string {
+	if e.Err != nil {
+		if e.Message != "" {
+			return e.Message + ": " + e.Err.Error()
+		}
+		return e.Err.Error()
+	}
+	if e.Message != "" {
+		return e.Message
+	}
 	return fmt.Sprintf("http %d %s", e.Status, http.StatusText(e.Status))
 }
+
+func (e *HTTPError) Unwrap() error { return e.Err }
