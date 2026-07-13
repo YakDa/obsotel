@@ -5,7 +5,9 @@ import (
 	"net/http"
 
 	obs "github.com/YakDa/obsotel/internal/obsbase"
+
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Handler returns an http.Handler wrapped with:
@@ -23,13 +25,14 @@ import (
 //	http.ListenAndServe(":8080", obsotel.Handler(log, mux, "user-service"))
 func Handler(log *slog.Logger, next http.Handler, serviceName string) http.Handler {
 	return otelhttp.NewHandler(
-		obs.LoggingMiddleware(log)(next),
+		traceIDHeader(obs.LoggingMiddleware(log)(next)),
 		serviceName,
 	)
 }
 
-// HandlerWithFilter is Handler but allows opting out of tracing for specific
-// routes (e.g. /healthz, /metrics). Pass a function that returns true to trace.
+// HandlerWithFilter is Handler but allows opting out of tracing and access
+// logging for specific routes (e.g. /healthz, /metrics). Pass a function that
+// returns true to trace.
 //
 // Requests for which shouldTrace returns false are served directly by the
 // underlying handler, bypassing both otelhttp and the logging middleware
@@ -43,7 +46,7 @@ func HandlerWithFilter(
 	serviceName string,
 	shouldTrace func(*http.Request) bool,
 ) http.Handler {
-	logging := obs.LoggingMiddleware(log)(next)
+	logging := traceIDHeader(obs.LoggingMiddleware(log)(next))
 	otelWrapped := otelhttp.NewHandler(logging, serviceName)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if shouldTrace != nil && !shouldTrace(r) {
@@ -51,5 +54,17 @@ func HandlerWithFilter(
 			return
 		}
 		otelWrapped.ServeHTTP(w, r)
+	})
+}
+
+// traceIDHeader injects X-Trace-ID into the response when an active OTel span
+// exists. Placed between otelhttp (which creates the span) and the logging
+// middleware so the header is set before the first Write.
+func traceIDHeader(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if sc := trace.SpanContextFromContext(r.Context()); sc.IsValid() {
+			w.Header().Set("X-Trace-ID", sc.TraceID().String())
+		}
+		next.ServeHTTP(w, r)
 	})
 }
