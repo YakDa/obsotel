@@ -192,15 +192,22 @@ func DoRequestWithRetryAndClient(
 	return lastResp, lastErr
 }
 
-// HTTPError is an error that carries an HTTP status code.
+// HTTPError is an error that carries an HTTP status code and optional rich metadata.
+//
+// The rich fields (Code, Details, Retryable) use omitempty serialization — when
+// unset, they are absent from the JSON response, making the wire format backward
+// compatible with the previous {"error": msg} shape.
 //
 // Used by:
 //   - DoRequestWithRetry: Status only (Message and Err zero) for 5xx responses.
 //   - WrapHandler / HTTPErr: Status + Message + Err for handler error responses.
 type HTTPError struct {
-	Status  int
-	Message string // client-facing message (if empty, falls back to cause or status text)
-	Err     error  // underlying cause (may be nil)
+	Status    int            // HTTP status code
+	Message   string         // client-facing message (if empty, falls back to cause or status text)
+	Err       error          // underlying cause (may be nil)
+	Code      string         // machine-readable error code (e.g. "case.not_found")
+	Details   map[string]any // structured context (e.g. {"case_id": "..."})
+	Retryable *bool          // nil = omit from response; non-nil = include
 }
 
 func (e *HTTPError) Error() string {

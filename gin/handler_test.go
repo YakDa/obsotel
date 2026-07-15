@@ -66,8 +66,8 @@ func TestWrapHandler_HTTPError_WritesStatusAndMessage(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	if body["error"] != "upstream timeout" {
-		t.Fatalf("expected error='upstream timeout', got %v", body["error"])
+	if body["error"] != "Bad Gateway" {
+		t.Fatalf("expected error='Bad Gateway' (5xx sanitized), got %v", body["error"])
 	}
 }
 
