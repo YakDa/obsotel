@@ -149,10 +149,6 @@ func clientMessage(err error, status int) string {
 	if errors.As(err, &he) && he.Message != "" {
 		return he.Message
 	}
-	// Never expose raw internal errors to the client.
-	if status >= 500 {
-		return http.StatusText(status)
-	}
 	return err.Error()
 }
 
